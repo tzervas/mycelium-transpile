@@ -1,0 +1,40 @@
+[package]
+name = "mycelium-transpile"
+version.workspace = true
+description = "Rust->Mycelium transpiler PoC (M-873, kickoff trx): best-effort .myc emission over a single Rust crate's syn AST, plus a structured, never-silent gap report for everything it cannot express."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mycelium-transpile"
+path = "src/bin/mycelium-transpile.rs"
+
+[dependencies]
+# Parse layer (kickoff-sanctioned fallback: no reusable AST-walk exists in the maintainer's
+# py2rust/py-rust-bridge scaffolds, so we build on `syn` directly).
+syn = { version = "2", features = ["full", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+# `quote` is syn's standard companion for rendering AST nodes back to source text (used only for
+# gap snippets / unsupported-construct messages here, never for code generation). Not in the
+# kickoff's illustrative dep list; added because gap snippets would otherwise have no faithful
+# textual rendering of the offending construct (see final report FLAG).
+quote = "1"
+serde.workspace = true
+serde_json.workspace = true
+# RFC-0041 §4.7 (W1): the shared never-silent recursion-budget leaf — closes the guard hole in
+# `emit_expr`/`map_type`/`map_pattern`'s mutual/self recursion over the `syn` AST (RR-29).
+mycelium-workstack = { path = "../mycelium-workstack" }
+
+[dev-dependencies]
+proptest = "1"
+# M-1001 drift guard (test-only): the reserved-word snapshot in `src/reserved.rs` is a verbatim copy
+# of `mycelium-l1`'s lexer keyword table; `src/tests/reserved.rs` asserts every snapshot word is
+# still rejected by the real `mycelium_l1::token::keyword`, so a snapshot that drifts to a
+# non-reserved word (the regressing over-gap direction) is caught. Dev-only — not a runtime dep.
+mycelium-l1 = { path = "../mycelium-l1" }

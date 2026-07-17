@@ -1,0 +1,143 @@
+// nodule: std.cmp
+// `std.cmp` / `convert` — ordering, equality, and non-representation value conversions (M-532).
+//
+// # Summary
+//
+// Provides the ordinary ordering, equality, and value-conversion surface every program needs:
+// `eq`/`ord` traits, derived helpers (`min`, `max`, `clamp`, sort keys), and value conversions
+// between scalar/value types — **same representation paradigm, value re-typed within it**.
+//
+// The honesty crux is structural (RFC-0016 §4.4):
+// - **Lossy / narrowing conversion is an explicit fallible `Result`, never a silent narrowing or
+//   truncation** (C1/G2) — `i32 → i8` that does not fit is `Err`, not a wrapped or clamped byte.
+// - Lossless widening (`i8 → i32`, `BF16 → F32`) is **total** — the domain is a subset of the
+//   codomain by construction, so no error arm exists.
+// - `clamp` with inverted bounds is `Err(ClampError::InvertedBounds)`, never a silent swap of
+//   `lo`/`hi`.
+//
+// # Module boundary
+//
+// A **representation change** (binary↔ternary, `F32→BF16`, Dense↔VSA) is `std.swap` (M-516) —
+// certificate-carrying and visible (RFC-0002), **not** a `convert`. This module does **not** cross
+// `Repr` paradigms and emits **no** swap certificate. The one resolved boundary placement
+// (README §5, "Ratification dispositions"): the lossless reverse `BF16 → F32` widening lives
+// **here** — no certificate needed, no paradigm crossing.
+//
+// # Guarantee matrix (RFC-0016 §4.5)
+//
+// Encoded as data in [`GUARANTEE_MATRIX`] and asserted in the test suite — never prose-only.
+//
+// # Contract conformance (RFC-0016 §4.1 C1–C6)
+//
+// - **C1 never-silent:** every fallible op returns `Result`; no sentinel, no clamp.
+// - **C2 honest tag:** every op is `Exact` (no accuracy semantics; C2 → "an op with no accuracy
+//   semantics is simply Exact"); the honesty load is in the fallibility column, not a
+//   probabilistic tag (VR-5).
+// - **C3 no black boxes / EXPLAIN:** narrowing rows are EXPLAIN-able — `NarrowError` is a
+//   reified, inspectable diagnostic carrying the rejected value and the target bounds.
+// - **C4 value-semantic (ADR-003):** all ops are pure functions of their inputs; conversions
+//   return new values, leaving inputs untouched.
+// - **C5 above the kernel (KC-3):** Ring 2 consumer; introduces no trusted code, no `unsafe`,
+//   no FFI, produces no certificate.
+// - **C6 declared, bounded effects:** every op is effect-free (`none`).
+//
+// Design spec: `docs/spec/stdlib/cmp.md`.
+//
+// ## Ambient Representation (RFC-0012 §8-Q3)
+//
+// This crate's public API participates in the RFC-0012 ambient-representation contract:
+// the representation choice (binary/ternary/dense/VSA) is implicit at the call site but
+// always reified, queryable, and EXPLAIN-able — never a black box (C3/SC-3).
+// [Declared per RFC-0012; direction accepted in DN-07 §8-Q3; per-ring pass scheduled as M-540.]
+//
+// **For this crate (Ring 2, Tier B):** Comparison ops are representation-aware where applicable:
+// a cross-representation comparison (`Binary` vs `Ternary` value) requires an explicit swap
+// (via `std.swap`) before comparison — this module does not cross `Repr` paradigms. The lossless
+// `BF16 → F32` widening here emits no certificate because it is not a paradigm crossing; all
+// other narrowing conversions are explicit fallible ops.
+//
+// # Stability (DN-66 freeze, 2026-07-01)
+//
+// This crate's public API, as documented in `docs/spec/stdlib/cmp.md` (spec status:
+// Accepted (2026-06-20)) and asserted by its guarantee-matrix table, is the **frozen baseline** per
+// [DN-66](../../../docs/notes/DN-66-Stdlib-Stable-API-Freeze-And-Rust-Crate-Retirement-Status.md).
+// A future breaking change here needs a spec amendment + changelog entry, not a silent edit (G2).
+// It remains the RFC-0031 D6 differential-oracle reference; the same-named `lib/std/cmp.myc` prototype is a narrower, structurally distinct surface (DN-66 S3.1) — the D6 retirement trigger has not fired, so no item here is `#[deprecated]`.
+// @summary: best-effort transpilation via mycelium-transpile (M-873). Declared,
+// unvalidated — no Mycelium parser/typechecker confirms this output; see the
+// accompanying .gap.json for every construct this pass could not express.
+nodule std.cmp;
+
+use mycelium_core.GuaranteeStrength;
+
+// The result of a comparison — Less, Equal, or Greater.
+//
+// A value-semantic equivalent of `std::cmp::Ordering`, defined here so the cmp module is
+// self-contained.
+type Ordering = Less | Equal | Greater;
+
+impl Ordering {
+  // Reverse the ordering: `Less ↔ Greater`, `Equal ↔ Equal`.
+  fn reverse(self: Ordering) => Ordering = match self { Less => Greater, Equal => Equal, Greater => Less };
+};
+
+impl Widen[Binary{16}] for Binary{8} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{8}) => Binary{16} = width_cast(self, 0b0000_0000_0000_0000);
+};
+
+impl Widen[Binary{32}] for Binary{8} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{8}) => Binary{32} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{64}] for Binary{8} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{8}) => Binary{64} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{128}] for Binary{8} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{8}) => Binary{128} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{32}] for Binary{16} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{16}) => Binary{32} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{64}] for Binary{16} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{16}) => Binary{64} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{128}] for Binary{16} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{16}) => Binary{128} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{64}] for Binary{32} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{32}) => Binary{64} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{128}] for Binary{32} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{32}) => Binary{128} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+impl Widen[Binary{128}] for Binary{64} {
+  // Declared: body emitted via width_cast (DN-41 real prim, docs/notes/DN-41-Width-Cast-Prim.md §2) — the Binary{M} width witness is a synthesized all-zero BinLit (RFC-0020 §Representation-tagged literals); unvalidated by a Mycelium checker (crate-level Declared guarantee, see src/lib.rs).
+  fn widen(self: Binary{64}) => Binary{128} = width_cast(self, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000);
+};
+
+// A BF16 value stored as its bit pattern in a `u16`.
+//
+// BF16 = 1-bit sign + 8-bit exponent + 7-bit mantissa (the upper 16 bits of an f32 bit pattern).
+// Every BF16 value is exactly representable as an f32 (zero-fill the lower 16 mantissa bits).
+// This is a lossless widening — no certificate required, no paradigm change (same floating-point
+// value model, same exponent range; only mantissa precision is extended).
+//
+// Ratified placement: `cmp`/`convert` owns the lossless `BF16 → F32` widening
+// (README §5 "Ratification dispositions"); `swap` keeps only the certified/lossy `F32 → BF16`.
+type Bf16Bits = Bf16Bits(Binary{16});

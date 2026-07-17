@@ -1,0 +1,1042 @@
+{
+  "source": "crates/mycelium-std-cmp/src/lib.rs",
+  "emitted_items": [
+    "use mycelium_core.GuaranteeStrength",
+    "Ordering",
+    "impl Ordering",
+    "impl Widen[Binary{16}] for Binary{8}",
+    "impl Widen[Binary{32}] for Binary{8}",
+    "impl Widen[Binary{64}] for Binary{8}",
+    "impl Widen[Binary{128}] for Binary{8}",
+    "impl Widen[Binary{32}] for Binary{16}",
+    "impl Widen[Binary{64}] for Binary{16}",
+    "impl Widen[Binary{128}] for Binary{16}",
+    "impl Widen[Binary{64}] for Binary{32}",
+    "impl Widen[Binary{128}] for Binary{32}",
+    "impl Widen[Binary{128}] for Binary{64}",
+    "Bf16Bits"
+  ],
+  "gaps": [
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 1,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "# ! [forbid (unsafe_code)]",
+      "reason": "crate/file-level inner attributes (#![...]) are not transpiled (no nodule-header equivalent for these Rust-specific directives)",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 73,
+      "col": 1,
+      "category": "DeriveAttr",
+      "rust_construct": "DeriveAttr",
+      "snippet": "# [doc = \" The result of a comparison — Less, Equal, or Greater.\"] # [doc = \"\"] # [doc = \" A value-semantic equivalent of `std::cmp::Ordering`, defined here so the cmp module is\"] # [doc = \" self-contained.\"] # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)] pub enum Ordering { # [doc = \" The left operand is less than the right.\"] Less , # [doc = \" The operands are equal.\"] Equal , # [doc = \" The left operand is greater than the right.\"] Greater , }",
+      "reason": "dropped non-doc attribute(s) on enum `Ordering`: # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)]",
+      "item_name": "Ordering"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 87,
+      "col": 1,
+      "category": "DeriveAttr",
+      "rust_construct": "DeriveAttr",
+      "snippet": "impl Ordering { # [doc = \" Reverse the ordering: `Less ↔ Greater`, `Equal ↔ Equal`.\"] # [must_use] pub fn reverse (self) -> Self { match self { Ordering :: Less => Ordering :: Greater , Ordering :: Equal => Ordering :: Equal , Ordering :: Greater => Ordering :: Less , } } }",
+      "reason": "dropped non-doc attribute(s) on method `reverse`: # [must_use]",
+      "item_name": "impl Ordering"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 99,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "impl From < std :: cmp :: Ordering > for Ordering { fn from (o : std :: cmp :: Ordering) -> Self { match o { std :: cmp :: Ordering :: Less => Ordering :: Less , std :: cmp :: Ordering :: Equal => Ordering :: Equal , std :: cmp :: Ordering :: Greater => Ordering :: Greater , } } }",
+      "reason": "qualified type path `std :: cmp :: Ordering` — collapsing to its last segment would risk colliding with an unrelated same-named local type (e.g. `std::cmp::Ordering` vs a local `Ordering`); left an explicit gap rather than guessed (VR-5)",
+      "item_name": "Ordering"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 109,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl From < Ordering > for std :: cmp :: Ordering { fn from (o : Ordering) -> Self { match o { Ordering :: Less => std :: cmp :: Ordering :: Less , Ordering :: Equal => std :: cmp :: Ordering :: Equal , Ordering :: Greater => std :: cmp :: Ordering :: Greater , } } }",
+      "reason": "impl target type `std :: cmp :: Ordering` has no confirmed mapping (qualified type path `std :: cmp :: Ordering` — collapsing to its last segment would risk colliding with an unrelated same-named local type (e.g. `std::cmp::Ordering` vs a local `Ordering`); left an explicit gap rather than guessed (VR-5))",
+      "item_name": "std :: cmp :: Ordering"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 123,
+      "col": 1,
+      "category": "Trait",
+      "rust_construct": "Trait",
+      "snippet": "# [doc = \" Total equality — respects content-addressed identity where it applies (ADR-003).\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total.** Two values with equal content are equal; metadata is **not**\"] # [doc = \" identity.\"] pub trait MycEq { # [doc = \" Returns `true` if `self` and `other` are equal (content-addressed; ADR-003).\"] fn myc_eq (& self , other : & Self) -> bool ; # [doc = \" Returns `true` if `self` and `other` are not equal.\"] # [must_use] fn myc_ne (& self , other : & Self) -> bool { ! self . myc_eq (other) } }",
+      "reason": "trait `MycEq` method `myc_eq` signature has no confirmed mapping (a trait-body `Self`/`self` has no concrete referent in this grammar; `self` parameter with no enclosing impl/trait context)",
+      "item_name": "MycEq"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 138,
+      "col": 1,
+      "category": "Trait",
+      "rust_construct": "Trait",
+      "snippet": "# [doc = \" Total ordering — for types with a well-defined total order.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total.**\"] pub trait MycOrd : MycEq { # [doc = \" Compare `self` with `other`, returning an [`Ordering`].\"] fn myc_cmp (& self , other : & Self) -> Ordering ; # [doc = \" Returns `true` if `self < other`.\"] # [must_use] fn myc_lt (& self , other : & Self) -> bool { matches ! (self . myc_cmp (other) , Ordering :: Less) } # [doc = \" Returns `true` if `self <= other`.\"] # [must_use] fn myc_le (& self , other : & Self) -> bool { matches ! (self . myc_cmp (other) , Ordering :: Less | Ordering :: Equal) } # [doc = \" Returns `true` if `self > other`.\"] # [must_use] fn myc_gt (& self , other : & Self) -> bool { matches ! (self . myc_cmp (other) , Ordering :: Greater) } # [doc = \" Returns `true` if `self >= other`.\"] # [must_use] fn myc_ge (& self , other : & Self) -> bool { matches ! (self . myc_cmp (other) , Ordering :: Greater | Ordering :: Equal) } }",
+      "reason": "trait `MycOrd` has supertrait bound(s) — trait_item grammar has no supertrait syntax (`'trait' Ident type_params? '{' ...`)",
+      "item_name": "MycOrd"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 170,
+      "col": 1,
+      "category": "Trait",
+      "rust_construct": "Trait",
+      "snippet": "# [doc = \" Partial ordering — for types where some pairs may be incomparable (e.g. floats with `NaN`).\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total** — `None` is the *defined* incomparable result (`NaN`), not a\"] # [doc = \" failure (C1: returning `None` is the honest, never-silent report of incomparability).\"] # [doc = \"\"] # [doc = \" FLAG Q1: float total order (e.g. `total_cmp`) deferred pending M-511 / RFC-0016 §8-Q3.\"] pub trait MycPartialOrd : MycEq { # [doc = \" Compare `self` with `other`. Returns `None` when the pair is incomparable (e.g. `NaN`).\"] fn myc_partial_cmp (& self , other : & Self) -> Option < Ordering > ; }",
+      "reason": "trait `MycPartialOrd` has supertrait bound(s) — trait_item grammar has no supertrait syntax (`'trait' Ident type_params? '{' ...`)",
+      "item_name": "MycPartialOrd"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 185,
+      "col": 1,
+      "category": "MacroDef",
+      "rust_construct": "MacroDef",
+      "snippet": "# [doc = \" Macro to implement `MycEq` + `MycOrd` for a type that already has `PartialEq + Ord`.\"] macro_rules ! impl_myc_ord { ($ ($ t : ty) ,+) => { $ (impl MycEq for $ t { fn myc_eq (& self , other : & Self) -> bool { self == other } } impl MycOrd for $ t { fn myc_cmp (& self , other : & Self) -> Ordering { std :: cmp :: Ord :: cmp (self , other) . into () } } impl MycPartialOrd for $ t { fn myc_partial_cmp (& self , other : & Self) -> Option < Ordering > { Some (self . myc_cmp (other)) } }) + } }",
+      "reason": "`macro_rules!` definition — no macro system in this grammar",
+      "item_name": "impl_myc_ord"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 206,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_myc_ord ! (bool , i8 , i16 , i32 , i64 , i128 , isize , u8 , u16 , u32 , u64 , u128 , usize , char) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 209,
+      "col": 1,
+      "category": "MacroDef",
+      "rust_construct": "MacroDef",
+      "snippet": "macro_rules ! impl_myc_partial_ord_float { ($ ($ t : ty) ,+) => { $ (impl MycEq for $ t { fn myc_eq (& self , other : & Self) -> bool { self == other } } impl MycPartialOrd for $ t { fn myc_partial_cmp (& self , other : & Self) -> Option < Ordering > { self . partial_cmp (other) . map (Ordering :: from) } }) + } }",
+      "reason": "`macro_rules!` definition — no macro system in this grammar",
+      "item_name": "impl_myc_partial_ord_float"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 224,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_myc_partial_ord_float ! (f32 , f64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 230,
+      "col": 1,
+      "category": "GenericBound",
+      "rust_construct": "GenericBound",
+      "snippet": "# [doc = \" Return the minimum of two values under total order.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total.** No accuracy semantics; a pure selection.\"] # [must_use] pub fn myc_min < T : MycOrd + Clone > (a : T , b : T) -> T { if a . myc_le (& b) { a } else { b } }",
+      "reason": "type parameter `T` carries a bound — type_params/fn generics are bare identifiers only in this grammar fragment",
+      "item_name": "myc_min"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 242,
+      "col": 1,
+      "category": "GenericBound",
+      "rust_construct": "GenericBound",
+      "snippet": "# [doc = \" Return the maximum of two values under total order.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total.** No accuracy semantics; a pure selection.\"] # [must_use] pub fn myc_max < T : MycOrd + Clone > (a : T , b : T) -> T { if a . myc_ge (& b) { a } else { b } }",
+      "reason": "type parameter `T` carries a bound — type_params/fn generics are bare identifiers only in this grammar fragment",
+      "item_name": "myc_max"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 254,
+      "col": 1,
+      "category": "PayloadVariant",
+      "rust_construct": "PayloadVariant",
+      "snippet": "# [doc = \" The explicit error set for `clamp` (spec §3).\"] # [doc = \"\"] # [doc = \" C1 (never-silent): `lo > hi` is **always** a `ClampError::InvertedBounds`, never a silent\"] # [doc = \" swap of `lo` and `hi`. The rejected bounds are carried for EXPLAIN (C3).\"] # [derive (Debug , Clone , PartialEq , Eq)] pub enum ClampError < T > { # [doc = \" The caller supplied inverted bounds (`lo > hi`).\"] InvertedBounds { # [doc = \" The lo bound supplied (which was greater than `hi`).\"] lo : T , # [doc = \" The hi bound supplied (which was less than `lo`).\"] hi : T , } , }",
+      "reason": "enum `ClampError` variant `InvertedBounds` uses named fields — `constructor ::= Ident ('(' type_ref (',' type_ref)* ')')?` has no named-field/record form",
+      "item_name": "ClampError"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 269,
+      "col": 1,
+      "category": "GenericBound",
+      "rust_construct": "GenericBound",
+      "snippet": "impl < T : std :: fmt :: Debug > std :: fmt :: Display for ClampError < T > { fn fmt (& self , f : & mut std :: fmt :: Formatter < '_ >) -> std :: fmt :: Result { match self { ClampError :: InvertedBounds { lo , hi } => { write ! (f , \"inverted clamp bounds: lo={lo:?} > hi={hi:?}\") } } } }",
+      "reason": "impl block has generic parameter(s) — impl_item grammar has no generic-parameter declaration slot",
+      "item_name": "ClampError < T >"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 279,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "mycelium_std_core :: impl_std_error ! (ClampError < T >, generics = [T : std :: fmt :: Debug] , where = [T : std :: fmt :: Debug]) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 285,
+      "col": 1,
+      "category": "GenericBound",
+      "rust_construct": "GenericBound",
+      "snippet": "# [doc = \" Clamp `x` to `[lo, hi]` under total order.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact`.** Returns `Err(ClampError::InvertedBounds)` when `lo > hi` — never\"] # [doc = \" a silent reorder (C1). The error carries the rejected bounds for EXPLAIN (C3).\"] # [doc = \"\"] # [doc = \" # Errors\"] # [doc = \"\"] # [doc = \" Returns [`ClampError::InvertedBounds`] when `lo > hi`.\"] pub fn myc_clamp < T : MycOrd + Clone > (x : T , lo : T , hi : T) -> Result < T , ClampError < T > > { if lo . myc_gt (& hi) { return Err (ClampError :: InvertedBounds { lo , hi }) ; } if x . myc_lt (& lo) { Ok (lo) } else if x . myc_gt (& hi) { Ok (hi) } else { Ok (x) } }",
+      "reason": "type parameter `T` carries a bound — type_params/fn generics are bare identifiers only in this grammar fragment",
+      "item_name": "myc_clamp"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 310,
+      "col": 1,
+      "category": "Trait",
+      "rust_construct": "Trait",
+      "snippet": "# [doc = \" Lossless widening conversion — the domain is a subset of the codomain by construction.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` / total** — widening can never fail; the structural split between\"] # [doc = \" `Widen` and `Narrow` is the type-level witness to the \\\"never-silent\\\" guarantee (C1/RFC-0016\"] # [doc = \" §4.4). A caller who imports this trait knows the conversion is lossless.\"] pub trait Widen < To > { # [doc = \" Convert `self` to the wider type. Total — never fails.\"] fn widen (self) -> To ; }",
+      "reason": "trait `Widen` method `widen` signature has no confirmed mapping (a trait-body `Self`/`self` has no concrete referent in this grammar; `self` parameter with no enclosing impl/trait context)",
+      "item_name": "Widen"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 320,
+      "col": 1,
+      "category": "PayloadVariant",
+      "rust_construct": "PayloadVariant",
+      "snippet": "# [doc = \" The explicit error set for a narrowing conversion (spec §3 / §4).\"] # [doc = \"\"] # [doc = \" **EXPLAIN-able (C3):** every variant carries the reified, inspectable diagnostic — the rejected\"] # [doc = \" value and (for `OutOfRange`) the target's representable bounds. A narrowing rejection is never\"] # [doc = \" an opaque error code; the caller has everything needed to understand *why*.\"] # [derive (Debug , Clone , PartialEq)] pub enum NarrowError { # [doc = \" The value is outside the target type's representable range.\"] OutOfRange { # [doc = \" String representation of the rejected value.\"] value : String , # [doc = \" String representation of the target type's minimum.\"] target_min : String , # [doc = \" String representation of the target type's maximum.\"] target_max : String , } , # [doc = \" The value cannot be represented in the target type for a structural reason\"] # [doc = \" (e.g. `NaN`, `±∞`, `f64::MAX` → `i32`).\"] NotRepresentable { # [doc = \" Human-readable description of why the value is not representable.\"] reason : String , } , }",
+      "reason": "enum `NarrowError` variant `OutOfRange` uses named fields — `constructor ::= Ident ('(' type_ref (',' type_ref)* ')')?` has no named-field/record form",
+      "item_name": "NarrowError"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 344,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl std :: fmt :: Display for NarrowError { fn fmt (& self , f : & mut std :: fmt :: Formatter < '_ >) -> std :: fmt :: Result { match self { NarrowError :: OutOfRange { value , target_min , target_max , } => write ! (f , \"value {value} is out of range [{target_min}, {target_max}]\") , NarrowError :: NotRepresentable { reason } => { write ! (f , \"value not representable: {reason}\") } } } }",
+      "reason": "no member of this impl block could be transpiled (1 sub-issue(s)): impl method `fmt` signature: unsupported Rust type form `& mut std :: fmt :: Formatter < '_ >`",
+      "item_name": "NarrowError"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 362,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "mycelium_std_core :: impl_std_error ! (NarrowError) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 364,
+      "col": 1,
+      "category": "Trait",
+      "rust_construct": "Trait",
+      "snippet": "# [doc = \" Explicitly-fallible narrowing conversion — the value may not fit in the target type.\"] # [doc = \"\"] # [doc = \" **Guarantee: `Exact` (when `Ok`) / `Err(NarrowError)` when the value does not fit.**\"] # [doc = \"\"] # [doc = \" C1 (never-silent): a narrowing conversion that cannot represent its input returns\"] # [doc = \" `Err(NarrowError)` carrying the rejected value and the target bounds — **never** a wrap,\"] # [doc = \" clamp, sign-flip, or truncation. The error is a reified, inspectable EXPLAIN artifact (C3).\"] pub trait Narrow < To > { # [doc = \" Convert `self` to the narrower type. Returns `Err` when the value does not fit.\"] # [doc = \"\"] # [doc = \" # Errors\"] # [doc = \"\"] # [doc = \" Returns [`NarrowError::OutOfRange`] when the value is outside the target range, or\"] # [doc = \" [`NarrowError::NotRepresentable`] when the value cannot be expressed in the target type\"] # [doc = \" at all (e.g. `NaN` → integer).\"] fn narrow (self) -> Result < To , NarrowError > ; }",
+      "reason": "trait `Narrow` method `narrow` signature has no confirmed mapping (a trait-body `Self`/`self` has no concrete referent in this grammar; `self` parameter with no enclosing impl/trait context)",
+      "item_name": "Narrow"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 390,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i16 > for i8 { fn widen (self) -> i16 { i16 :: from (self) } }",
+      "reason": "impl target type `i8` has no confirmed mapping (signed integer `i8` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i8"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 395,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i32 > for i8 { fn widen (self) -> i32 { i32 :: from (self) } }",
+      "reason": "impl target type `i8` has no confirmed mapping (signed integer `i8` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i8"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 400,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i64 > for i8 { fn widen (self) -> i64 { i64 :: from (self) } }",
+      "reason": "impl target type `i8` has no confirmed mapping (signed integer `i8` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i8"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 405,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i128 > for i8 { fn widen (self) -> i128 { i128 :: from (self) } }",
+      "reason": "impl target type `i8` has no confirmed mapping (signed integer `i8` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i8"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 410,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i32 > for i16 { fn widen (self) -> i32 { i32 :: from (self) } }",
+      "reason": "impl target type `i16` has no confirmed mapping (signed integer `i16` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i16"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 415,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i64 > for i16 { fn widen (self) -> i64 { i64 :: from (self) } }",
+      "reason": "impl target type `i16` has no confirmed mapping (signed integer `i16` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i16"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 420,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i128 > for i16 { fn widen (self) -> i128 { i128 :: from (self) } }",
+      "reason": "impl target type `i16` has no confirmed mapping (signed integer `i16` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i16"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 425,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i64 > for i32 { fn widen (self) -> i64 { i64 :: from (self) } }",
+      "reason": "impl target type `i32` has no confirmed mapping (signed integer `i32` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i32"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 430,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i128 > for i32 { fn widen (self) -> i128 { i128 :: from (self) } }",
+      "reason": "impl target type `i32` has no confirmed mapping (signed integer `i32` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i32"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 435,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < i128 > for i64 { fn widen (self) -> i128 { i128 :: from (self) } }",
+      "reason": "impl target type `i64` has no confirmed mapping (signed integer `i64` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5))",
+      "item_name": "i64"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 494,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "impl Widen < i32 > for bool { fn widen (self) -> i32 { i32 :: from (self) } }",
+      "reason": "signed integer `i32` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5)",
+      "item_name": "bool"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 499,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "impl Widen < i64 > for bool { fn widen (self) -> i64 { i64 :: from (self) } }",
+      "reason": "signed integer `i64` — Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-5)",
+      "item_name": "bool"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 504,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < u32 > for bool { fn widen (self) -> u32 { u32 :: from (self) } }",
+      "reason": "no member of this impl block could be transpiled (1 sub-issue(s)): impl method `widen` body: qualified/associated-function call `u32 :: from` — no established Mycelium surface form for a Rust conversion-op body; emitting the bare last-segment name would fabricate a call (e.g. `from(...)` is not a Mycelium builtin)",
+      "item_name": "bool"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 509,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < u64 > for bool { fn widen (self) -> u64 { u64 :: from (self) } }",
+      "reason": "no member of this impl block could be transpiled (1 sub-issue(s)): impl method `widen` body: qualified/associated-function call `u64 :: from` — no established Mycelium surface form for a Rust conversion-op body; emitting the bare last-segment name would fabricate a call (e.g. `from(...)` is not a Mycelium builtin)",
+      "item_name": "bool"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 516,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Widen < f64 > for f32 { fn widen (self) -> f64 { f64 :: from (self) } }",
+      "reason": "impl target type `f32` has no confirmed mapping (`f32` — `scalar` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm)",
+      "item_name": "f32"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 536,
+      "col": 1,
+      "category": "DeriveAttr",
+      "rust_construct": "DeriveAttr",
+      "snippet": "# [doc = \" A BF16 value stored as its bit pattern in a `u16`.\"] # [doc = \"\"] # [doc = \" BF16 = 1-bit sign + 8-bit exponent + 7-bit mantissa (the upper 16 bits of an f32 bit pattern).\"] # [doc = \" Every BF16 value is exactly representable as an f32 (zero-fill the lower 16 mantissa bits).\"] # [doc = \" This is a lossless widening — no certificate required, no paradigm change (same floating-point\"] # [doc = \" value model, same exponent range; only mantissa precision is extended).\"] # [doc = \"\"] # [doc = \" Ratified placement: `cmp`/`convert` owns the lossless `BF16 → F32` widening\"] # [doc = \" (README §5 \\\"Ratification dispositions\\\"); `swap` keeps only the certified/lossy `F32 → BF16`.\"] # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)] pub struct Bf16Bits (pub u16) ;",
+      "reason": "dropped non-doc attribute(s) on struct `Bf16Bits`: # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)]",
+      "item_name": "Bf16Bits"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 548,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Bf16Bits { # [doc = \" The BF16 bit-pattern for positive zero.\"] pub const ZERO : Bf16Bits = Bf16Bits (0x0000) ; # [doc = \" The BF16 bit-pattern for positive one.\"] pub const ONE : Bf16Bits = Bf16Bits (0x3F80) ; # [doc = \" The BF16 bit-pattern for negative one.\"] pub const NEG_ONE : Bf16Bits = Bf16Bits (0xBF80) ; # [doc = \" The BF16 bit-pattern for NaN (a quiet NaN in f32 bit layout).\"] pub const NAN : Bf16Bits = Bf16Bits (0x7FC0) ; # [doc = \" The BF16 bit-pattern for positive infinity.\"] pub const INFINITY : Bf16Bits = Bf16Bits (0x7F80) ; # [doc = \" The BF16 bit-pattern for negative infinity.\"] pub const NEG_INFINITY : Bf16Bits = Bf16Bits (0xFF80) ; # [doc = \" Widen this BF16 value to an f32 by zero-filling the lower 16 mantissa bits.\"] # [doc = \"\"] # [doc = \" Total — every BF16 value is exactly representable as an f32 (no precision is lost, no\"] # [doc = \" exponent is out of range). This is the lossless `BF16 → F32` widening that lives in\"] # [doc = \" `cmp`/`convert` (ratified; README §5).\"] # [must_use] pub fn to_f32 (self) -> f32 { f32 :: from_bits (u32 :: from (self . 0) << 16) } }",
+      "reason": "no member of this impl block could be transpiled (7 sub-issue(s)): impl associated const `ZERO`; impl associated const `ONE`; impl associated const `NEG_ONE`; impl associated const `NAN`; impl associated const `INFINITY`; impl associated const `NEG_INFINITY`; impl method `to_f32` signature: `f32` — `scalar` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm",
+      "item_name": "Bf16Bits"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 580,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "impl Widen < f32 > for Bf16Bits { # [doc = \" Lossless `BF16 → F32` widening — total, `Exact`, no certificate (spec §4; README §5).\"] fn widen (self) -> f32 { self . to_f32 () } }",
+      "reason": "`f32` — `scalar` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm",
+      "item_name": "Bf16Bits"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 595,
+      "col": 1,
+      "category": "MacroDef",
+      "rust_construct": "MacroDef",
+      "snippet": "# [doc = \" Helper macro for signed→signed / signed→unsigned integer narrowing.\"] macro_rules ! impl_narrow_int { (signed $ From : ty => $ To : ty) => { impl Narrow <$ To > for $ From { fn narrow (self) -> Result <$ To , NarrowError > { <$ To >:: try_from (self) . map_err (| _ | NarrowError :: OutOfRange { value : self . to_string () , target_min : <$ To >:: MIN . to_string () , target_max : <$ To >:: MAX . to_string () , }) } } } ; }",
+      "reason": "`macro_rules!` definition — no macro system in this grammar",
+      "item_name": "impl_narrow_int"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 612,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i16 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 613,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 614,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 615,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 616,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 617,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => i32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 618,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i128 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 619,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i128 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 620,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i128 => i32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 621,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i128 => i64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 624,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u16 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 625,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u32 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 626,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u32 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 627,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 628,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 629,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 630,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 631,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 632,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 633,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 636,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i8 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 637,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i8 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 638,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i8 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 639,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i8 => u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 640,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i16 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 641,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i16 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 642,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i16 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 643,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i16 => u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 644,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 645,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 646,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 647,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i32 => u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 648,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => u8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 649,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => u16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 650,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => u32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 651,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed i64 => u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 654,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u8 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 655,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u16 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 656,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u16 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 657,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u32 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 658,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u32 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 659,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u32 => i32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 660,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 661,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 662,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => i32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 663,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u64 => i64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 664,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => i8) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 665,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => i16) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 666,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => i32) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 667,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => i64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 668,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_int ! (signed u128 => i128) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 675,
+      "col": 1,
+      "category": "Impl",
+      "rust_construct": "Impl",
+      "snippet": "impl Narrow < f32 > for f64 { # [doc = \" Narrow an `f64` to `f32`.\"] # [doc = \"\"] # [doc = \" Returns `Ok` only when the value is exactly representable as an `f32` (i.e., the\"] # [doc = \" round-trip `f32 → f64 → f32` is lossless). Returns `Err(NarrowError::NotRepresentable)`\"] # [doc = \" for `NaN` / `±∞` (non-finite) and `Err(NarrowError::OutOfRange)` when the magnitude\"] # [doc = \" exceeds `f32::MAX`. Returns `Err(NarrowError::NotRepresentable)` when the value is finite\"] # [doc = \" but not exactly representable as an `f32` (precision loss would occur).\"] # [doc = \"\"] # [doc = \" FLAG Q2: full float-narrowing with configurable rounding mode belongs to `std.math`\"] # [doc = \" (M-525); this impl only covers the exact-representability case.\"] # [doc = \"\"] # [doc = \" # Errors\"] # [doc = \"\"] # [doc = \" - [`NarrowError::NotRepresentable`] for NaN / ±∞ or precision-lossy finite values.\"] # [doc = \" - [`NarrowError::OutOfRange`] when `|value| > f32::MAX`.\"] fn narrow (self) -> Result < f32 , NarrowError > { if self . is_nan () { return Err (NarrowError :: NotRepresentable { reason : \"NaN is not representable as a finite value\" . to_owned () , }) ; } if self . is_infinite () { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} (±∞) is not a finite value\") , }) ; } let abs = self . abs () ; if abs > f64 :: from (f32 :: MAX) { return Err (NarrowError :: OutOfRange { value : self . to_string () , target_min : f32 :: MIN . to_string () , target_max : f32 :: MAX . to_string () , }) ; } let as_f32 = self as f32 ; let round_trip = f64 :: from (as_f32) ; if round_trip != self { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} is not exactly representable as f32 (would round to {as_f32})\") , }) ; } Ok (as_f32) } }",
+      "reason": "impl target type `f64` has no confirmed mapping (`f64` — `scalar` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm)",
+      "item_name": "f64"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 728,
+      "col": 1,
+      "category": "MacroDef",
+      "rust_construct": "MacroDef",
+      "snippet": "macro_rules ! impl_narrow_f64_to_int { ($ ($ To : ty) ,+) => { $ (impl Narrow <$ To > for f64 { fn narrow (self) -> Result <$ To , NarrowError > { if self . is_nan () { return Err (NarrowError :: NotRepresentable { reason : \"NaN is not representable as an integer\" . to_owned () , }) ; } if self . is_infinite () { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} (±∞) is not representable as an integer\") , }) ; } if self . fract () != 0.0 { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} has a fractional part and is not exactly representable \\\n                                 as {}; rounding belongs to std.math (M-525)\" , stringify ! ($ To)) , }) ; } let as_int = self as i128 ; if as_int < (<$ To >:: MIN as i128) || as_int > (<$ To >:: MAX as i128) { return Err (NarrowError :: OutOfRange { value : self . to_string () , target_min : <$ To >:: MIN . to_string () , target_max : <$ To >:: MAX . to_string () , }) ; } Ok (self as $ To) } }) + } }",
+      "reason": "`macro_rules!` definition — no macro system in this grammar",
+      "item_name": "impl_narrow_f64_to_int"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 775,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_f64_to_int ! (i8 , i16 , i32 , i64 , u8 , u16 , u32 , u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 778,
+      "col": 1,
+      "category": "MacroDef",
+      "rust_construct": "MacroDef",
+      "snippet": "macro_rules ! impl_narrow_f32_to_int { ($ ($ To : ty) ,+) => { $ (impl Narrow <$ To > for f32 { fn narrow (self) -> Result <$ To , NarrowError > { if self . is_nan () { return Err (NarrowError :: NotRepresentable { reason : \"NaN is not representable as an integer\" . to_owned () , }) ; } if self . is_infinite () { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} (±∞) is not representable as an integer\") , }) ; } if self . fract () != 0.0 { return Err (NarrowError :: NotRepresentable { reason : format ! (\"{self} has a fractional part and is not exactly representable \\\n                                 as {}; rounding belongs to std.math (M-525)\" , stringify ! ($ To)) , }) ; } let as_int = self as i128 ; if as_int < (<$ To >:: MIN as i128) || as_int > (<$ To >:: MAX as i128) { return Err (NarrowError :: OutOfRange { value : self . to_string () , target_min : <$ To >:: MIN . to_string () , target_max : <$ To >:: MAX . to_string () , }) ; } Ok (self as $ To) } }) + } }",
+      "reason": "`macro_rules!` definition — no macro system in this grammar",
+      "item_name": "impl_narrow_f32_to_int"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 820,
+      "col": 1,
+      "category": "MacroInvocation",
+      "rust_construct": "MacroInvocation",
+      "snippet": "impl_narrow_f32_to_int ! (i8 , i16 , i32 , i64 , u8 , u16 , u32 , u64) ;",
+      "reason": "item-position macro invocation — no macro system in this grammar",
+      "item_name": null
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 826,
+      "col": 1,
+      "category": "Struct",
+      "rust_construct": "Struct",
+      "snippet": "# [doc = \" One row of the `std.cmp`/`convert` guarantee matrix (RFC-0016 §4.5; spec §4).\"] # [doc = \"\"] # [doc = \" Encoded as data so tests can assert structural invariants rather than relying on prose.\"] # [doc = \" The spec's nine rows map 1:1 to the entries in [`GUARANTEE_MATRIX`].\"] # [derive (Debug , Clone , PartialEq , Eq)] pub struct MatrixRow { # [doc = \" The exported op or trait.\"] pub op : & 'static str , # [doc = \" The honest guarantee tag (`Exact` for all rows — no accuracy semantics).\"] pub guarantee : GuaranteeStrength , # [doc = \" Whether the op is fallible (returns `Result`).\"] pub fallible : bool , # [doc = \" Whether the op surfaces an inspectable EXPLAIN artifact (the `NarrowError`).\"] pub explainable : bool , # [doc = \" A brief description of the fallibility shape.\"] pub fallibility_desc : & 'static str , # [doc = \" Declared effects (always `\\\"none\\\"` for this module).\"] pub effects : & 'static str , }",
+      "reason": "struct `MatrixRow` uses named fields — no record/product-type surface (only a single-ctor positional shape maps to `type_item`)",
+      "item_name": "MatrixRow"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 846,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "# [doc = \" The `std.cmp`/`convert` guarantee matrix (spec §4).\"] # [doc = \"\"] # [doc = \" Nine rows, all `Exact` and effect-free. The honesty is carried by the `fallibility_desc`\"] # [doc = \" column, not a probabilistic tag (VR-5 / C2). Narrowing rows are `explainable = true` because\"] # [doc = \" the `NarrowError` is a reified, inspectable rejection diagnostic (C3).\"] # [doc = \"\"] # [doc = \" Asserted in tests via [`assert_matrix_invariants`] — never prose-only (RFC-0016 §4.5).\"] pub const GUARANTEE_MATRIX : & [MatrixRow] = & [MatrixRow { op : \"eq / ne\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total (bool)\" , effects : \"none\" , } , MatrixRow { op : \"cmp (total order)\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total (Ordering)\" , effects : \"none\" , } , MatrixRow { op : \"partial_cmp\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total — None is the defined incomparable result (e.g. NaN), not failure\" , effects : \"none\" , } , MatrixRow { op : \"lt / le / gt / ge\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total (bool)\" , effects : \"none\" , } , MatrixRow { op : \"min / max\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total\" , effects : \"none\" , } , MatrixRow { op : \"clamp\" , guarantee : GuaranteeStrength :: Exact , fallible : true , explainable : true , fallibility_desc : \"Err(ClampError::InvertedBounds{lo, hi}) when lo > hi — never silent\" , effects : \"none\" , } , MatrixRow { op : \"widen (lossless, e.g. i8→i32, BF16→F32)\" , guarantee : GuaranteeStrength :: Exact , fallible : false , explainable : false , fallibility_desc : \"total — domain ⊆ codomain, no error arm\" , effects : \"none\" , } , MatrixRow { op : \"narrow (fallible, e.g. i32→i8)\" , guarantee : GuaranteeStrength :: Exact , fallible : true , explainable : true , fallibility_desc : \"Err(NarrowError::OutOfRange{value, target_min, target_max}) — never silent truncation/wrap\" , effects : \"none\" , } , MatrixRow { op : \"narrow (not-representable, e.g. f64→i32 on NaN/±∞/overflow)\" , guarantee : GuaranteeStrength :: Exact , fallible : true , explainable : true , fallibility_desc : \"Err(NarrowError::NotRepresentable{reason}) — reified reason record\" , effects : \"none\" , } ,] ;",
+      "reason": "top-level `const GUARANTEE_MATRIX` — no const item production in the grammar (`item` covers use/default/type/trait/impl/fn/object/lower/derive only)",
+      "item_name": "GUARANTEE_MATRIX"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 928,
+      "col": 1,
+      "category": "Other",
+      "rust_construct": "Other",
+      "snippet": "# [doc = \" Assert the structural invariants of the guarantee matrix — called from tests.\"] # [doc = \"\"] # [doc = \" Discharges RFC-0016 §4.5: \\\"encoded as data, asserted in tests, never prose-only.\\\"\"] # [doc = \" Panics with a descriptive message on any violation.\"] pub fn assert_matrix_invariants () { assert_eq ! (GUARANTEE_MATRIX . len () , 9 , \"spec §4 lists nine matrix rows; found {}\" , GUARANTEE_MATRIX . len ()) ; for row in GUARANTEE_MATRIX { assert ! (! row . op . is_empty () , \"matrix row has empty op name\") ; assert_eq ! (row . guarantee , GuaranteeStrength :: Exact , \"op {}: all cmp/convert rows must be Exact (no accuracy semantics; VR-5)\" , row . op) ; assert_eq ! (row . effects , \"none\" , \"op {}: all cmp/convert ops are effect-free (C6)\" , row . op) ; if row . fallible { assert ! (! row . fallibility_desc . is_empty () , \"op {}: fallible rows must describe the error set\" , row . op) ; } if row . explainable { assert ! (row . fallible , \"op {}: explainable implies fallible (the NarrowError/ClampError is the EXPLAIN artifact)\" , row . op) ; } } }",
+      "reason": "function has no return type (implicit `()`) — no unit value is representable in this grammar fragment",
+      "item_name": "assert_matrix_invariants"
+    },
+    {
+      "file": "crates/mycelium-std-cmp/src/lib.rs",
+      "line": 975,
+      "col": 1,
+      "category": "TestItem",
+      "rust_construct": "TestItem",
+      "snippet": "# [cfg (test)] mod tests { use super :: * ; # [doc = \" The guarantee matrix is internally consistent (RFC-0016 §4.5).\"] # [test] fn guarantee_matrix_invariants_hold () { assert_matrix_invariants () ; } # [doc = \" All nine expected ops appear in the matrix.\"] # [test] fn matrix_has_nine_rows () { assert_eq ! (GUARANTEE_MATRIX . len () , 9 , \"spec §4 lists nine rows\") ; } # [doc = \" Every row is Exact (no accuracy semantics; C2/VR-5).\"] # [test] fn all_rows_are_exact () { for row in GUARANTEE_MATRIX { assert_eq ! (row . guarantee , GuaranteeStrength :: Exact , \"op '{}' must be Exact\" , row . op) ; } } # [doc = \" Every row declares no effects (C6).\"] # [test] fn all_rows_are_effect_free () { for row in GUARANTEE_MATRIX { assert_eq ! (row . effects , \"none\" , \"op '{}' must be effect-free\" , row . op) ; } } # [doc = \" Only narrowing / clamp rows are EXPLAIN-able.\"] # [test] fn only_fallible_rows_are_explainable () { for row in GUARANTEE_MATRIX { if row . explainable { assert ! (row . fallible , \"op '{}': explainable implies fallible\" , row . op) ; } } } # [doc = \" `Ordering::reverse` is an involution: `reverse(reverse(x)) == x`.\"] # [test] fn ordering_reverse_is_involution () { for o in [Ordering :: Less , Ordering :: Equal , Ordering :: Greater] { assert_eq ! (o . reverse () . reverse () , o) ; } } # [doc = \" `Less.reverse() == Greater`, `Greater.reverse() == Less`, `Equal` is self-dual.\"] # [test] fn ordering_reverse_values () { assert_eq ! (Ordering :: Less . reverse () , Ordering :: Greater) ; assert_eq ! (Ordering :: Greater . reverse () , Ordering :: Less) ; assert_eq ! (Ordering :: Equal . reverse () , Ordering :: Equal) ; } # [doc = \" `myc_cmp` on integers agrees with the expected total order.\"] # [test] fn myc_cmp_integer_agrees_with_standard () { assert_eq ! (1i32 . myc_cmp (& 2i32) , Ordering :: Less) ; assert_eq ! (2i32 . myc_cmp (& 2i32) , Ordering :: Equal) ; assert_eq ! (3i32 . myc_cmp (& 2i32) , Ordering :: Greater) ; } # [doc = \" `lt / le / gt / ge` are consistent with `cmp` for integers (property test over a range).\"] # [test] fn myc_ord_predicates_consistent_with_cmp_over_range () { for a in - 10i32 ..= 10 { for b in - 10i32 ..= 10 { let ord = a . myc_cmp (& b) ; assert_eq ! (a . myc_lt (& b) , ord == Ordering :: Less) ; assert_eq ! (a . myc_le (& b) , ord != Ordering :: Greater) ; assert_eq ! (a . myc_gt (& b) , ord == Ordering :: Greater) ; assert_eq ! (a . myc_ge (& b) , ord != Ordering :: Less) ; assert_eq ! (a . myc_eq (& b) , ord == Ordering :: Equal) ; assert_eq ! (a . myc_ne (& b) , ord != Ordering :: Equal) ; } } } # [doc = \" Total order is antisymmetric: if `a <= b` and `b <= a` then `a == b`.\"] # [test] fn myc_ord_is_antisymmetric () { for a in - 5i32 ..= 5 { for b in - 5i32 ..= 5 { if a . myc_le (& b) && b . myc_le (& a) { assert_eq ! (a , b , \"antisymmetry violation: {a} ≤ {b} and {b} ≤ {a} but {a} ≠ {b}\") ; } } } } # [doc = \" Total order is transitive: if `a <= b` and `b <= c` then `a <= c`.\"] # [test] fn myc_ord_is_transitive () { for a in - 5i32 ..= 5 { for b in - 5i32 ..= 5 { for c in - 5i32 ..= 5 { if a . myc_le (& b) && b . myc_le (& c) { assert ! (a . myc_le (& c) , \"transitivity: {a} ≤ {b} ≤ {c} but {a} > {c}\") ; } } } } } # [doc = \" `NaN` compared to anything (including itself) yields `None` (never-silent).\"] # [test] fn partial_cmp_nan_yields_none () { let nan = f64 :: NAN ; assert_eq ! (nan . myc_partial_cmp (& nan) , None , \"NaN <=> NaN must be None\") ; assert_eq ! (nan . myc_partial_cmp (& 1.0f64) , None , \"NaN <=> 1.0 must be None\") ; assert_eq ! (1.0f64 . myc_partial_cmp (& nan) , None , \"1.0 <=> NaN must be None\") ; } # [doc = \" Normal float values compare as expected.\"] # [test] fn partial_cmp_normal_floats () { assert_eq ! (1.0f64 . myc_partial_cmp (& 2.0f64) , Some (Ordering :: Less)) ; assert_eq ! (2.0f64 . myc_partial_cmp (& 2.0f64) , Some (Ordering :: Equal)) ; assert_eq ! (3.0f64 . myc_partial_cmp (& 2.0f64) , Some (Ordering :: Greater)) ; } # [doc = \" `min` returns the smaller value (property test).\"] # [test] fn myc_min_is_correct () { for a in - 10i32 ..= 10 { for b in - 10i32 ..= 10 { let m = myc_min (a , b) ; assert_eq ! (m , a . min (b) , \"min({a},{b}) = {m}\") ; } } } # [doc = \" `max` returns the larger value (property test).\"] # [test] fn myc_max_is_correct () { for a in - 10i32 ..= 10 { for b in - 10i32 ..= 10 { assert_eq ! (myc_max (a , b) , a . max (b)) ; } } } # [doc = \" Valid clamp: value in range returns unchanged.\"] # [test] fn clamp_in_range_returns_unchanged () { assert_eq ! (myc_clamp (5i32 , 0 , 10) , Ok (5)) ; } # [doc = \" Valid clamp: value below lo returns lo.\"] # [test] fn clamp_below_lo_returns_lo () { assert_eq ! (myc_clamp (- 5i32 , 0 , 10) , Ok (0)) ; } # [doc = \" Valid clamp: value above hi returns hi.\"] # [test] fn clamp_above_hi_returns_hi () { assert_eq ! (myc_clamp (15i32 , 0 , 10) , Ok (10)) ; } # [doc = \" `clamp` with `lo > hi` returns `Err(ClampError::InvertedBounds)` — never a silent swap.\"] # [doc = \" Mutation witness: swap lo and hi → Ok.\"] # [test] fn clamp_inverted_bounds_explicit_error () { let result = myc_clamp (5i32 , 10 , 0) ; assert ! (matches ! (result , Err (ClampError :: InvertedBounds { lo : 10 , hi : 0 })) , \"expected Err(InvertedBounds{{10, 0}}), got {result:?}\") ; } # [doc = \" `lo == hi` is valid and returns `lo`/`hi` (degenerate but not inverted).\"] # [test] fn clamp_equal_bounds_is_valid () { assert_eq ! (myc_clamp (5i32 , 3 , 3) , Ok (3)) ; } # [doc = \" Clamp property: for any valid bounds, `clamp(x, lo, hi) ∈ [lo, hi]`.\"] # [test] fn clamp_result_is_in_bounds () { for x in - 10i32 ..= 10 { for lo in - 5i32 ..= 5 { for hi in lo ..= 5 { let result = myc_clamp (x , lo , hi) . expect (\"valid bounds\") ; assert ! (result >= lo && result <= hi , \"clamp({x}, {lo}, {hi}) = {result} is outside [{lo}, {hi}]\") ; } } } } # [doc = \" `i8 → i32` widening is total and lossless (property test over full i8 corpus).\"] # [test] fn widen_i8_to_i32_full_corpus () { for v in i8 :: MIN ..= i8 :: MAX { let wide : i32 = v . widen () ; assert_eq ! (wide , i32 :: from (v) , \"widen({v}: i8) -> i32 mismatch\") ; } } # [doc = \" `u8 → u32` widening is total and lossless (property test over full u8 corpus).\"] # [test] fn widen_u8_to_u32_full_corpus () { for v in u8 :: MIN ..= u8 :: MAX { let wide : u32 = v . widen () ; assert_eq ! (wide , u32 :: from (v)) ; } } # [doc = \" `bool → i32` widening: false=0, true=1.\"] # [test] fn widen_bool_to_i32 () { assert_eq ! (< bool as Widen < i32 >>:: widen (false) , 0i32) ; assert_eq ! (< bool as Widen < i32 >>:: widen (true) , 1i32) ; } # [doc = \" `f32 → f64` widening: round-trip is exact for all test values.\"] # [test] fn widen_f32_to_f64_round_trip () { for v in [0.0f32 , 1.0 , - 1.0 , f32 :: MIN_POSITIVE , f32 :: MAX] { let wide : f64 = v . widen () ; assert_eq ! (wide as f32 , v , \"widen({v}: f32) -> f64 round-trip mismatch\") ; } } # [doc = \" BF16 zero widens to f32 zero.\"] # [test] fn widen_bf16_zero_to_f32 () { let bf16_zero = Bf16Bits :: ZERO ; assert_eq ! (bf16_zero . widen () , 0.0f32) ; } # [doc = \" BF16 one (0x3F80) widens to f32 one (same bit pattern).\"] # [test] fn widen_bf16_one_to_f32 () { let bf16_one = Bf16Bits :: ONE ; assert_eq ! (bf16_one . widen () , 1.0f32) ; } # [doc = \" BF16 negative one widens to -1.0f32.\"] # [test] fn widen_bf16_neg_one_to_f32 () { let bf16_neg_one = Bf16Bits :: NEG_ONE ; assert_eq ! (bf16_neg_one . widen () , - 1.0f32) ; } # [doc = \" The widened f32 always encodes the BF16's upper 16 bits (zero-fill property).\"] # [doc = \"\"] # [doc = \" Property: for any BF16 bit pattern `b`, `f32::to_bits(bf16.widen())` has its\"] # [doc = \" upper 16 bits equal to `b` and its lower 16 bits equal to 0.\"] # [test] fn widen_bf16_zero_fills_lower_16_bits () { for upper16 in [0x0000u16 , 0x3F80 , 0xBF80 , 0x4000 , 0xC000 , 0x4080] { let bf16 = Bf16Bits (upper16) ; let f32_bits = bf16 . widen () . to_bits () ; assert_eq ! ((f32_bits >> 16) as u16 , upper16 , \"upper 16 bits of f32 must match BF16 pattern {upper16:#06x}\") ; assert_eq ! (f32_bits & 0xFFFF , 0 , \"lower 16 bits of f32 must be zero-filled for BF16 {upper16:#06x}\") ; } } # [doc = \" BF16 special values: NaN and ±Inf widen to the corresponding f32 special values.\"] # [test] fn widen_bf16_special_values () { assert ! (Bf16Bits :: NAN . widen () . is_nan ()) ; assert ! (Bf16Bits :: INFINITY . widen () . is_infinite () && Bf16Bits :: INFINITY . widen () > 0.0) ; assert ! (Bf16Bits :: NEG_INFINITY . widen () . is_infinite () && Bf16Bits :: NEG_INFINITY . widen () < 0.0) ; } # [doc = \" `i32 → i8` narrowing: values in range return Ok; out-of-range return Err with diagnostics.\"] # [test] fn narrow_i32_to_i8_in_range () { assert_eq ! (< i32 as Narrow < i8 >>:: narrow (0) , Ok (0i8)) ; assert_eq ! (< i32 as Narrow < i8 >>:: narrow (127) , Ok (127i8)) ; assert_eq ! (< i32 as Narrow < i8 >>:: narrow (- 128) , Ok (- 128i8)) ; } # [doc = \" `i32 → i8` narrowing: overflow returns `Err(OutOfRange)` with the rejected value and\"] # [doc = \" target bounds — never a silent truncation or wrap (C1).\"] # [doc = \" Mutation witness: change 128 to 127 → Ok.\"] # [test] fn narrow_i32_to_i8_overflow_is_explicit_error () { let result = < i32 as Narrow < i8 > > :: narrow (128) ; match result { Err (NarrowError :: OutOfRange { value , target_min , target_max , }) => { assert_eq ! (value , \"128\") ; assert_eq ! (target_min , \"-128\") ; assert_eq ! (target_max , \"127\") ; } other => panic ! (\"expected Err(OutOfRange), got {other:?}\") , } } # [doc = \" `i32 → i8` narrowing: underflow is also an explicit error.\"] # [test] fn narrow_i32_to_i8_underflow_is_explicit_error () { let result = < i32 as Narrow < i8 > > :: narrow (- 129) ; assert ! (matches ! (result , Err (NarrowError :: OutOfRange { .. })) , \"expected Err(OutOfRange), got {result:?}\") ; } # [doc = \" Round-trip property: for every `i8`, `widen: i8→i32` then `narrow: i32→i8` is identity.\"] # [test] fn narrow_round_trip_i8_corpus () { for v in i8 :: MIN ..= i8 :: MAX { let wide : i32 = v . widen () ; let back : i8 = < i32 as Narrow < i8 > > :: narrow (wide) . unwrap_or_else (| e | panic ! (\"narrow(widen({v})) failed: {e}\")) ; assert_eq ! (back , v , \"round-trip failed for {v}\") ; } } # [doc = \" `u64 → u8` narrowing: values above 255 return Err with correct bounds.\"] # [test] fn narrow_u64_to_u8_overflow () { let result = < u64 as Narrow < u8 > > :: narrow (256) ; match result { Err (NarrowError :: OutOfRange { value , target_min , target_max , }) => { assert_eq ! (value , \"256\") ; assert_eq ! (target_min , \"0\") ; assert_eq ! (target_max , \"255\") ; } other => panic ! (\"expected Err(OutOfRange{{256, 0, 255}}), got {other:?}\") , } } # [doc = \" Signed → unsigned narrowing: negative values return `Err(OutOfRange)`.\"] # [test] fn narrow_i32_to_u32_negative_is_error () { let result = < i32 as Narrow < u32 > > :: narrow (- 1) ; assert ! (matches ! (result , Err (NarrowError :: OutOfRange { .. })) , \"expected Err(OutOfRange), got {result:?}\") ; } # [doc = \" `f64 → i32`: NaN returns `Err(NotRepresentable)` — never a silent default.\"] # [doc = \" Mutation witness: replace NaN with 1.0 → Ok.\"] # [test] fn narrow_f64_nan_to_i32_not_representable () { let result = < f64 as Narrow < i32 > > :: narrow (f64 :: NAN) ; assert ! (matches ! (result , Err (NarrowError :: NotRepresentable { .. })) , \"expected Err(NotRepresentable), got {result:?}\") ; } # [doc = \" `f64 → i32`: ±Inf returns `Err(NotRepresentable)`.\"] # [test] fn narrow_f64_inf_to_i32_not_representable () { assert ! (matches ! (< f64 as Narrow < i32 >>:: narrow (f64 :: INFINITY) , Err (NarrowError :: NotRepresentable { .. }))) ; assert ! (matches ! (< f64 as Narrow < i32 >>:: narrow (f64 :: NEG_INFINITY) , Err (NarrowError :: NotRepresentable { .. }))) ; } # [doc = \" `f64 → i32`: magnitude overflow returns `Err(OutOfRange)`.\"] # [test] fn narrow_f64_overflow_to_i32_out_of_range () { let result = < f64 as Narrow < i32 > > :: narrow (1e18f64) ; assert ! (matches ! (result , Err (NarrowError :: OutOfRange { .. })) , \"expected Err(OutOfRange), got {result:?}\") ; } # [doc = \" `f64 → i32`: exact integer values in range succeed.\"] # [test] fn narrow_f64_exact_integer_to_i32_succeeds () { assert_eq ! (< f64 as Narrow < i32 >>:: narrow (42.0) , Ok (42i32)) ; assert_eq ! (< f64 as Narrow < i32 >>:: narrow (- 1.0) , Ok (- 1i32)) ; assert_eq ! (< f64 as Narrow < i32 >>:: narrow (0.0) , Ok (0i32)) ; } # [doc = \" `f64 → i32`: fractional values return `Err(NotRepresentable)` — rounding belongs to\"] # [doc = \" std.math (M-525), not here (FLAG Q2).\"] # [test] fn narrow_f64_fractional_to_i32_not_representable () { let result = < f64 as Narrow < i32 > > :: narrow (1.5) ; assert ! (matches ! (result , Err (NarrowError :: NotRepresentable { .. })) , \"expected Err(NotRepresentable) for 1.5, got {result:?}\") ; } # [doc = \" `f64 → f32`: exact f32 values round-trip.\"] # [test] fn narrow_f64_to_f32_exact_values_succeed () { assert_eq ! (< f64 as Narrow < f32 >>:: narrow (1.0f64) , Ok (1.0f32)) ; assert_eq ! (< f64 as Narrow < f32 >>:: narrow (- 1.0f64) , Ok (- 1.0f32)) ; assert_eq ! (< f64 as Narrow < f32 >>:: narrow (0.0f64) , Ok (0.0f32)) ; } # [doc = \" `f64 → f32`: NaN returns `Err(NotRepresentable)`.\"] # [test] fn narrow_f64_to_f32_nan_is_error () { assert ! (matches ! (< f64 as Narrow < f32 >>:: narrow (f64 :: NAN) , Err (NarrowError :: NotRepresentable { .. }))) ; } # [doc = \" `f64 → f32`: ±Inf returns `Err(NotRepresentable)`.\"] # [test] fn narrow_f64_to_f32_inf_is_error () { assert ! (matches ! (< f64 as Narrow < f32 >>:: narrow (f64 :: INFINITY) , Err (NarrowError :: NotRepresentable { .. }))) ; } # [doc = \" `f64 → f32`: magnitude overflow returns `Err(OutOfRange)`.\"] # [test] fn narrow_f64_to_f32_overflow_is_out_of_range () { assert ! (matches ! (< f64 as Narrow < f32 >>:: narrow (f64 :: MAX) , Err (NarrowError :: OutOfRange { .. }))) ; } # [doc = \" `NarrowError::OutOfRange` carries the rejected value and target bounds (EXPLAIN; C3).\"] # [test] fn narrow_error_out_of_range_carries_diagnostics () { match < i32 as Narrow < i8 > > :: narrow (200) { Err (NarrowError :: OutOfRange { value , target_min , target_max , }) => { assert ! (! value . is_empty () , \"value must be non-empty\") ; assert ! (! target_min . is_empty () , \"target_min must be non-empty\") ; assert ! (! target_max . is_empty () , \"target_max must be non-empty\") ; assert ! (value . contains (\"200\") , \"value field must contain '200'\") ; } other => panic ! (\"expected Err(OutOfRange), got {other:?}\") , } } # [doc = \" `NarrowError::NotRepresentable` carries a non-empty reason string (EXPLAIN; C3).\"] # [test] fn narrow_error_not_representable_carries_reason () { match < f64 as Narrow < i32 > > :: narrow (f64 :: NAN) { Err (NarrowError :: NotRepresentable { reason }) => { assert ! (! reason . is_empty () , \"reason must be non-empty\") ; } other => panic ! (\"expected Err(NotRepresentable), got {other:?}\") , } } # [doc = \" `ClampError::InvertedBounds` carries the rejected lo and hi values (EXPLAIN; C3).\"] # [test] fn clamp_error_carries_diagnostics () { match myc_clamp (5i32 , 10 , 3) { Err (ClampError :: InvertedBounds { lo , hi }) => { assert_eq ! (lo , 10) ; assert_eq ! (hi , 3) ; } other => panic ! (\"expected Err(InvertedBounds), got {other:?}\") , } } # [doc = \" No integer narrowing silently truncates or wraps: all out-of-range values are Err.\"] # [doc = \"\"] # [doc = \" This is the property test for C1 / G2 across the integer narrowing surface.\"] # [test] fn narrow_never_silent_integer_overflow () { for v in [128i32 , 255 , 1000 , - 129 , i32 :: MAX , i32 :: MIN] { let result = < i32 as Narrow < i8 > > :: narrow (v) ; assert ! (result . is_err () , \"narrow({v}: i32 → i8) must be Err for out-of-range values; got {result:?}\") ; } assert ! (< i32 as Narrow < i8 >>:: narrow (127) . is_ok ()) ; assert ! (< i32 as Narrow < i8 >>:: narrow (- 128) . is_ok ()) ; } # [doc = \" Float→integer narrowing at the i64/u64 boundary must NOT silently saturate.\"] # [doc = \"\"] # [doc = \" `i64::MAX as f64` rounds up to 2^63, so the value 2^63 is one past `i64::MAX`; a naive\"] # [doc = \" `value > (i64::MAX as f64)` range check would pass it and the saturating `as` cast would\"] # [doc = \" return `Ok(i64::MAX)` — a silent wrong value (C1). These probe that exact boundary.\"] # [test] fn narrow_float_to_int_boundary_is_never_silent () { let two_pow_63 : f64 = 9_223_372_036_854_775_808.0 ; let two_pow_64 : f64 = 18_446_744_073_709_551_616.0 ; assert ! (matches ! (< f64 as Narrow < i64 >>:: narrow (two_pow_63) , Err (NarrowError :: OutOfRange { .. }))) ; assert ! (matches ! (< f32 as Narrow < i64 >>:: narrow (two_pow_63 as f32) , Err (NarrowError :: OutOfRange { .. }))) ; assert ! (matches ! (< f64 as Narrow < u64 >>:: narrow (two_pow_64) , Err (NarrowError :: OutOfRange { .. }))) ; assert_eq ! (< f64 as Narrow < i64 >>:: narrow (- two_pow_63) . unwrap () , i64 :: MIN) ; let max_repr = 9_223_372_036_854_774_784.0_f64 ; assert_eq ! (< f64 as Narrow < i64 >>:: narrow (max_repr) . unwrap () , 9_223_372_036_854_774_784_i64) ; } # [doc = \" No float-to-int narrowing silently produces a wrong integer.\"] # [test] fn narrow_never_silent_float_to_int () { for v in [f64 :: NAN , f64 :: INFINITY , f64 :: NEG_INFINITY] { assert ! (< f64 as Narrow < i32 >>:: narrow (v) . is_err () , \"narrow({v}: f64 → i32) must be Err\") ; } for v in [0.5f64 , 1.1 , - 0.1 , 1e6 + 0.5] { assert ! (< f64 as Narrow < i32 >>:: narrow (v) . is_err () , \"narrow({v}: f64 → i32) must be Err (fractional, no rounding)\") ; } } # [doc = \" For any `i16` value, `narrow(widen(v))` is the identity (round-trip property).\"] # [test] fn narrow_widen_round_trip_i16_to_i32 () { for v in (i16 :: MIN ..= i16 :: MAX) . step_by (100) { let wide : i32 = v . widen () ; let back : i16 = < i32 as Narrow < i16 > > :: narrow (wide) . unwrap_or_else (| e | panic ! (\"narrow(widen({v}): i32 → i16) failed: {e}\")) ; assert_eq ! (back , v) ; } } }",
+      "reason": "#[cfg(test)] item — out of scope for this PoC's transpilation surface (excluded from the expressible-fraction denominator, but recorded, never silently skipped)",
+      "item_name": "tests"
+    }
+  ],
+  "total_top_level_items": 112
+}

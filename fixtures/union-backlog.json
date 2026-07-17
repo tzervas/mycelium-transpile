@@ -1,0 +1,337 @@
+{
+  "guarantee": "Empirical (measured by actually running mycelium-transpile's directory/batch mode over the 6-crate corpus below; percentages/counts are exact arithmetic over that run, not estimated). See 'flagged' for the 2 twins with no Rust source to run.",
+  "generated_by": "crates/mycelium-transpile (M-873 follow-on, batch mode)",
+  "corpus": [
+    "mycelium-std-cmp",
+    "mycelium-std-iter",
+    "mycelium-std-collections",
+    "mycelium-std-text",
+    "mycelium-std-fmt",
+    "mycelium-std-math"
+  ],
+  "flagged": [
+    {
+      "twin": "std.option",
+      "reason": "no Rust source crate in this repo defines an Option type matching lib/std/option.myc's Option[A] (grep for `enum Option` across every crates/*/src/**/*.rs found zero matches, including mycelium-std-core). lib/std/option.myc's own header says \"Self-hosted Option<A>\" and traces to M-715 (E13-1, RFC-0031 \u00a75 D4 Tier-0) \u2014 it was authored directly in Mycelium, not ported from a Rust prototype. Left out of the transpiled corpus rather than substituting an unrelated crate (VR-5/G2: flagged, not guessed)."
+    },
+    {
+      "twin": "std.result",
+      "reason": "no Rust source crate in this repo defines a Result type matching lib/std/result.myc's Result[A, E] (same grep, zero matches). lib/std/result.myc traces to M-649 \u2014 issues.yaml titles it \"Self-hosting Stage-2: first stdlib module written in Mycelium-lang L1 syntax\", i.e. it was the first module authored directly in Mycelium, with no Rust backing crate to transpile. Left out of the transpiled corpus rather than substituting an unrelated crate (VR-5/G2: flagged, not guessed)."
+    }
+  ],
+  "crates": [
+    {
+      "crate": "mycelium-std-cmp",
+      "twin": "std.cmp",
+      "files": 1,
+      "total_items": 112,
+      "non_test_items": 111,
+      "emitted": 14,
+      "gaps": 102,
+      "expressible_pct": 12.6,
+      "category_counts": {
+        "DeriveAttr": 3,
+        "GenericBound": 4,
+        "Impl": 17,
+        "MacroDef": 5,
+        "MacroInvocation": 57,
+        "Other": 7,
+        "PayloadVariant": 2,
+        "Struct": 1,
+        "TestItem": 1,
+        "Trait": 5
+      }
+    },
+    {
+      "crate": "mycelium-std-iter",
+      "twin": "std.iter",
+      "files": 7,
+      "total_items": 57,
+      "non_test_items": 55,
+      "emitted": 10,
+      "gaps": 49,
+      "expressible_pct": 18.2,
+      "category_counts": {
+        "DeriveAttr": 1,
+        "GenericBound": 26,
+        "Impl": 3,
+        "MacroInvocation": 2,
+        "Other": 8,
+        "Struct": 7,
+        "TestItem": 2
+      }
+    },
+    {
+      "crate": "mycelium-std-collections",
+      "twin": "std.collections",
+      "files": 6,
+      "total_items": 37,
+      "non_test_items": 31,
+      "emitted": 10,
+      "gaps": 30,
+      "expressible_pct": 32.3,
+      "category_counts": {
+        "DeriveAttr": 2,
+        "GenericBound": 7,
+        "Impl": 2,
+        "MacroInvocation": 1,
+        "Other": 7,
+        "PayloadVariant": 1,
+        "Struct": 4,
+        "TestItem": 6
+      }
+    },
+    {
+      "crate": "mycelium-std-text",
+      "twin": "std.text",
+      "files": 5,
+      "total_items": 70,
+      "non_test_items": 65,
+      "emitted": 2,
+      "gaps": 69,
+      "expressible_pct": 3.1,
+      "category_counts": {
+        "GenericBound": 1,
+        "Impl": 8,
+        "MacroInvocation": 5,
+        "Other": 42,
+        "PayloadVariant": 5,
+        "Struct": 3,
+        "TestItem": 5
+      }
+    },
+    {
+      "crate": "mycelium-std-fmt",
+      "twin": "std.fmt",
+      "files": 1,
+      "total_items": 33,
+      "non_test_items": 32,
+      "emitted": 0,
+      "gaps": 34,
+      "expressible_pct": 0.0,
+      "category_counts": {
+        "Impl": 5,
+        "MacroInvocation": 2,
+        "Other": 18,
+        "PayloadVariant": 3,
+        "Struct": 5,
+        "TestItem": 1
+      }
+    },
+    {
+      "crate": "mycelium-std-math",
+      "twin": "std.math",
+      "files": 4,
+      "total_items": 55,
+      "non_test_items": 52,
+      "emitted": 7,
+      "gaps": 51,
+      "expressible_pct": 13.5,
+      "category_counts": {
+        "DeriveAttr": 2,
+        "GenericBound": 1,
+        "Impl": 2,
+        "MacroInvocation": 1,
+        "Other": 39,
+        "Struct": 3,
+        "TestItem": 3
+      }
+    }
+  ],
+  "grand_union": {
+    "non_test_items": 346,
+    "emitted": 43,
+    "gaps": 335,
+    "expressible_pct": 12.4,
+    "category_counts": {
+      "DeriveAttr": 8,
+      "GenericBound": 39,
+      "Impl": 37,
+      "MacroDef": 5,
+      "MacroInvocation": 68,
+      "Other": 121,
+      "PayloadVariant": 11,
+      "Struct": 23,
+      "TestItem": 18,
+      "Trait": 5
+    },
+    "ranked_categories": [
+      {
+        "category": "Other",
+        "count": 121,
+        "top_reason_patterns": [
+          {
+            "pattern": "unsupported Rust type form `_`",
+            "count": 34
+          },
+          {
+            "pattern": "`_` \u2014 `_` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm",
+            "count": 20
+          },
+          {
+            "pattern": "`_` declaration \u2014 Mycelium's nodule-per-file model has no nested-module construct in this grammar fragment",
+            "count": 18
+          },
+          {
+            "pattern": "grouped `_` has no confirmed equivalent (only a single path or glob import is supported)",
+            "count": 16
+          },
+          {
+            "pattern": "signed integer `_` \u2014 Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-N)",
+            "count": 12
+          }
+        ]
+      },
+      {
+        "category": "MacroInvocation",
+        "count": 68,
+        "top_reason_patterns": [
+          {
+            "pattern": "item-position macro invocation \u2014 no macro system in this grammar",
+            "count": 68
+          }
+        ]
+      },
+      {
+        "category": "GenericBound",
+        "count": 39,
+        "top_reason_patterns": [
+          {
+            "pattern": "impl block has generic parameter(s) \u2014 impl_item grammar has no generic-parameter declaration slot",
+            "count": 16
+          },
+          {
+            "pattern": "generic type path `_` \u2014 type-argument mapping not confirmed",
+            "count": 16
+          },
+          {
+            "pattern": "type parameter `_` carries a bound \u2014 type_params/fn generics are bare identifiers only in this grammar fragment",
+            "count": 7
+          }
+        ]
+      },
+      {
+        "category": "Impl",
+        "count": 37,
+        "top_reason_patterns": [
+          {
+            "pattern": "no member of this impl block could be transpiled (N sub-issue(s)): impl method `_` signature: unsupported Rust type form `_`",
+            "count": 16
+          },
+          {
+            "pattern": "impl target type `_` has no confirmed mapping (signed integer `_` \u2014 Binary{N} is documented unsigned-magnitude (lib/std/cmp.myc); mapping a signed type onto it would misrepresent twos-complement semantics, so this is left an explicit gap rather than guessed (VR-N))",
+            "count": 10
+          },
+          {
+            "pattern": "no member of this impl block could be transpiled (N sub-issue(s)): impl method `_` body: qualified/associated-function call `_` \u2014 no established Mycelium surface form for a Rust conversion-op body; emitting the bare last-segment name would fabricate a call (e.g. `_` is not a Mycelium builtin)",
+            "count": 2
+          },
+          {
+            "pattern": "impl target type `_` has no confirmed mapping (`_` \u2014 `_` only appears inside Dense{N,scalar}/ambient_params in the grammar, never as a bare value type; no confirmed base_type arm)",
+            "count": 2
+          },
+          {
+            "pattern": "impl target type `_` has no confirmed mapping (qualified type path `_` \u2014 collapsing to its last segment would risk colliding with an unrelated same-named local type (e.g. `_` vs a local `_`); left an explicit gap rather than guessed (VR-N))",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "category": "Struct",
+        "count": 23,
+        "top_reason_patterns": [
+          {
+            "pattern": "struct `_` uses named fields \u2014 no record/product-type surface (only a single-ctor positional shape maps to `_`)",
+            "count": 20
+          },
+          {
+            "pattern": "struct `_` has a field type with no confirmed mapping (`_`/`_` \u2014 `_` exists in base_type but is not confirmed equivalent to a UTF-N text type)",
+            "count": 1
+          },
+          {
+            "pattern": "struct `_` has a field type with no confirmed mapping (`_` has a platform-dependent width; no fixed Binary{N} mapping)",
+            "count": 1
+          },
+          {
+            "pattern": "struct `_` has a field type with no confirmed mapping (qualified type path `_` \u2014 collapsing to its last segment would risk colliding with an unrelated same-named local type (e.g. `_` vs a local `_`); left an explicit gap rather than guessed (VR-N))",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "category": "TestItem",
+        "count": 18,
+        "top_reason_patterns": [
+          {
+            "pattern": "#[cfg(test)] item \u2014 out of scope for this PoC's transpilation surface (excluded from the expressible-fraction denominator, but recorded, never silently skipped)",
+            "count": 18
+          }
+        ]
+      },
+      {
+        "category": "PayloadVariant",
+        "count": 11,
+        "top_reason_patterns": [
+          {
+            "pattern": "enum `_` variant `_` uses named fields \u2014 `_` has no named-field/record form",
+            "count": 10
+          },
+          {
+            "pattern": "enum `_` variant `_` has a field type with no confirmed mapping (`_`/`_` \u2014 `_` exists in base_type but is not confirmed equivalent to a UTF-N text type)",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "category": "DeriveAttr",
+        "count": 8,
+        "top_reason_patterns": [
+          {
+            "pattern": "dropped non-doc attribute(s) on enum `_`: # [derive (Debug , Clone , Copy , PartialEq , Eq)]",
+            "count": 4
+          },
+          {
+            "pattern": "dropped non-doc attribute(s) on enum `_`: # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)]",
+            "count": 1
+          },
+          {
+            "pattern": "dropped non-doc attribute(s) on method `_`: # [must_use]",
+            "count": 1
+          },
+          {
+            "pattern": "dropped non-doc attribute(s) on struct `_`: # [derive (Debug , Clone , Copy , PartialEq , Eq , Hash)]",
+            "count": 1
+          },
+          {
+            "pattern": "dropped non-doc attribute(s) on struct `_`: # [derive (Debug , Clone , Copy , PartialEq , Eq)]",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "category": "MacroDef",
+        "count": 5,
+        "top_reason_patterns": [
+          {
+            "pattern": "`_` definition \u2014 no macro system in this grammar",
+            "count": 5
+          }
+        ]
+      },
+      {
+        "category": "Trait",
+        "count": 5,
+        "top_reason_patterns": [
+          {
+            "pattern": "trait `_` method `_` signature has no confirmed mapping (a trait-body `_`/`_` has no concrete referent in this grammar; `_` parameter with no enclosing impl/trait context)",
+            "count": 3
+          },
+          {
+            "pattern": "trait `_` has supertrait bound(s) \u2014 trait_item grammar has no supertrait syntax (`_`)",
+            "count": 2
+          }
+        ]
+      }
+    ]
+  }
+}
