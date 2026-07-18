@@ -1,0 +1,44 @@
+# cargo-about configuration (M-… third-party attribution). Drives `just licenses` /
+# `THIRD-PARTY-LICENSES.md` generation. Mirrors the permissive allow-list already enforced by
+# `deny.toml` (cargo-deny) — this is the notice-preservation companion to that supply-chain gate,
+# not a new policy: if a license isn't accepted here, `cargo deny check licenses` should already be
+# failing on it first.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    "MPL-2.0",
+]
+
+# First-party mycelium-* workspace members carry `publish = false` / no `license` field to clarify
+# (they're covered by the repo-root `LICENSE`, MIT — ADR-022 §7); cargo-about's `private.ignore`
+# excludes unpublished workspace members so this file stays scoped to genuine third-party crates.
+[private]
+ignore = true
+
+# TODO(W2, RFC-0041 §5 / RR-29 §4): `stacker`/`psm` are NOT yet dependencies (only a commented-out
+# future `grow-on-demand` option in crates/mycelium-stack/Cargo.toml; `Cargo.lock` has no entry
+# today — confirmed W0). Both are MIT/Apache-2.0-dual-licensed, so they're already covered by the
+# `accepted` list above and need no new entry here — but when W2 actually wires them in, the
+# addition MUST (never-silent, G2):
+#   1. pin EXACT versions (no `^`/range) in the relevant Cargo.toml, matching the workspace's
+#      pinned-dependency discipline;
+#   2. regenerate THIS crate's THIRD-PARTY-LICENSES.md via `just licenses` (do not hand-edit that
+#      file — see its own header) so the notice-preservation record picks the two crates up;
+#   3. be reflected in `scripts/checks/geiger-baseline.sh`'s baseline (`--update`, after review) so
+#      the new unsafe usage (contained to the `stacker`/`psm` leaf per ADR-014/KC-3, never in
+#      Mycelium-authored source) is a recorded decision, not a silent drift.
+# W0 (this file's author) deliberately did NOT add stacker/psm here — that was W2's scope.
+# W2 UPDATE (2026-07-03): stacker 0.1.24 (exact-pinned) + psm 0.1.31 (transitive) are now real deps of
+# mycelium-stack (called via stacker's SAFE api; mycelium-stack stays #![forbid(unsafe_code)] — the
+# stack-switching unsafe is contained upstream in stacker/psm, ADR-014/KC-3). THIRD-PARTY-LICENSES.md
+# regenerated (both MIT/Apache-2.0 upstream; first-party stays MIT). The cargo-geiger baseline is still
+# a PLACEHOLDER (cargo-geiger not installed in-env) — run `scripts/checks/geiger-baseline.sh --update`
+# once it is available to record stacker/psm's contained unsafe as a reviewed decision (not silent).

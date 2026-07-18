@@ -1,0 +1,65 @@
+# Replicated from tzervas/mycelium (Phase B). The monorepo's
+# `cargo xtask deps` acyclicity gate is monorepo-only; cross-repo
+# layering is enforced by the pinned dep graph (CROSS-REF.md).
+# cargo-deny configuration (C1-09). Drives `scripts/checks/deny.sh` / `just deny`.
+# Minimal, sensible defaults: deny known advisories, restrict to a permissive license set
+# aligned with the workspace's MIT license, and require crates.io as the only source.
+# Tighten as the dependency tree grows; this is the supply-chain floor, not a ceiling.
+
+[advisories]
+# Use the bundled RustSec advisory DB. A reported vulnerability fails the gate.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licenses compatible with the workspace (MIT). Unicode-3.0 covers unicode-ident.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Multiple versions of the same crate are warned, not denied: the pre-1.0 tree still pulls in
+# transitive duplicates we do not control. Tighten `multiple-versions` to "deny" once it settles.
+#
+# Wildcards stay at "warn" rather than "deny" — deliberately, with a flagged follow-up. With
+# `allow-wildcard-paths = true` the version-less *internal* path deps of non-published crates
+# (`mycelium-* v0.0.0 = { path = "../..." }`) no longer warn (legitimate intra-workspace wiring).
+# What remains visible is a real, non-silent finding: the *publishable* std crates (e.g.
+# `mycelium-std-math` v0.1.0) carry version-less path deps, which `allow-wildcard-paths` cannot
+# excuse (crates.io disallows path deps), so they would block a `wildcards = "deny"`. Fixing that
+# means declaring versioned deps or `publish = false` on those crates — an ADR-018 per-crate
+# SemVer / release-engineering decision, out of scope for the M-652 supply-chain gate. Until that
+# lands, wildcards is "warn" so the smell surfaces (G2 — never silently green) without failing
+# the gate on a pre-existing packaging gap.
+multiple-versions = "warn"
+wildcards = "warn"
+allow-wildcard-paths = true
+
+# Structural belt-and-suspenders for the acyclic-deps invariant (DN-68; kickoff `acy`, M-880). The
+# AUTHORITATIVE structural gate is `cargo xtask deps` (scripts/checks/deps-acyclic.sh): it enforces
+# acyclicity (normal AND dev edges), the `core < std < tools` tier rule, and `interp` never depending
+# on any `std-*`, with per-edge diagnostics. cargo-deny CANNOT express dependency cycles or a
+# tier-scoped edge rule, so this list only adds a narrow, explicit tripwire for the one upward anomaly
+# `acy` removed (`mycelium-mlir -> mycelium-std-runtime`, M-883/M-884): `mycelium-std-runtime` may be a
+# DIRECT dependency ONLY of its current legitimate consumer(s). Re-introducing the mlir edge — or any
+# new upward reach into std-runtime — fails `just deny` / `just check` loudly (G2). A genuinely new
+# std-runtime consumer is added here in a review PR, deliberately, per DN-68's change-by-review
+# procedure. Never-silent: this is a SUBSET of the invariant; `xtask deps` is the complete check.
+deny = [
+    { name = "mycelium-std-runtime", wrappers = ["mycelium-bench"] },
+]
+
+[sources]
+# Only crates.io. Reject unknown registries/git sources unless explicitly allowed later.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

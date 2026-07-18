@@ -1,0 +1,35 @@
+# osv-scanner configuration — Mycelium's in-env supply-chain scanner (OSV.dev).
+# Consumed by `just scan` (scripts/checks/scan.sh) via `--config`. osv-scanner is our PRIMARY
+# in-env supply-chain gate: it queries OSV.dev over plain HTTPS — no GitHub git clone — so the
+# session's git-proxy `insteadOf` rewrite never touches it (unlike cargo-deny/cargo-audit, whose
+# advisory-db git fetch is hijacked → false `deny` red; see .claude/memory/toolchain.md §"Supply-
+# chain gate"). Coverage today: clean over the workspace lockfile.
+#
+# ── HOUSE RULES APPLIED TO SCANNING (this file is held to the same discipline as the corpus) ─────
+# This config is tuned to Mycelium's articulated posture — "inherently secure + hardened, yet fully
+# usable; the trade-offs made explicit, never silent" (CLAUDE.md house rules; RFC-0034 §hardening).
+# Concretely:
+#   • NEVER-SILENT (G2). The default is zero suppression. An advisory is acted on (bump/replace) or,
+#     if it genuinely cannot be (no fix yet / not reachable in our usage), it is ignored ONLY as an
+#     explicit, justified, DATED entry below — never dropped silently. A suppressed-but-undocumented
+#     vuln is a defect ranked with an ungrounded claim.
+#   • GROUNDED (house rule 4). Every `[[IgnoredVulns]]` MUST carry BOTH a `reason` (the checked basis
+#     — why it is not exploitable in our usage, or why no remediation exists yet) AND an `ignoreUntil`
+#     (a review-by date, so a suppression cannot quietly outlive its justification). No reason ⇒ not
+#     allowed here. The reason states its strength honestly (proven-unreachable vs believed-low-risk).
+#   • APPEND-ONLY INTENT (house rule 3). Entries are reviewed and removed when the basis lapses
+#     (`ignoreUntil` reached) or a fix lands — they do not silently accumulate. Tighten, don't relax.
+#   • SMALL/AUDITABLE (KC-3). Keep this list short and legible; a long ignore list is a smell, not a
+#     workaround. Prefer fixing the dependency.
+#
+# Schema: https://google.github.io/osv-scanner/configuration/
+#
+# ── Justified, dated suppressions (NONE — the scan is clean) ─────────────────────────────────────
+# Template for when one is genuinely needed (do NOT add without a checked basis + a review date):
+#   [[IgnoredVulns]]
+#   id = "RUSTSEC-YYYY-NNNN"            # or GHSA-…/CVE-…
+#   ignoreUntil = 2026-12-31            # review-by date — the suppression expires, never permanent
+#   reason = "<checked basis>: e.g. the vulnerable code path (fn X) is unreachable in our usage —
+#             we only call Y; tracked in M-NNN; re-evaluate at the date above."
+#
+# (intentionally empty — every workspace dependency is currently clean per OSV.dev)

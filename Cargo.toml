@@ -29,7 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 # RFC-0041 §4.7 (W1): the shared never-silent recursion-budget leaf — closes the guard hole in
 # `emit_expr`/`map_type`/`map_pattern`'s mutual/self recursion over the `syn` AST (RR-29).
-mycelium-workstack = { path = "../mycelium-workstack" }
+mycelium-workstack = { git = "https://github.com/tzervas/mycelium-core", rev = "781d3fcceba82acfe6b0eb46650513bd78a2416b" }
 
 [dev-dependencies]
 proptest = "1"
@@ -37,4 +37,31 @@ proptest = "1"
 # of `mycelium-l1`'s lexer keyword table; `src/tests/reserved.rs` asserts every snapshot word is
 # still rejected by the real `mycelium_l1::token::keyword`, so a snapshot that drifts to a
 # non-reserved word (the regressing over-gap direction) is caught. Dev-only — not a runtime dep.
-mycelium-l1 = { path = "../mycelium-l1" }
+mycelium-l1 = { git = "https://github.com/tzervas/mycelium-l1", rev = "cd32a1ed7ab7d2be38c9c3047da7318d182b7a1c" }
+
+# --- standalone workspace root (course-correction Phase B, 2026-07-18; steer handoff §6.2) ---
+[workspace]
+
+[workspace.package]
+version = "0.464.0"
+edition = "2021"
+rust-version = "1.96.1"
+license = "MIT"
+repository = "https://github.com/tzervas/mycelium-transpile"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+
+[workspace.lints.rust]
+# ADR-014: unsafe permitted-but-documented; the check is clippy::undocumented_unsafe_blocks.
+unsafe_code = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+# G2 never-silent arithmetic: release builds panic on overflow (monorepo parity).
+[profile.release]
+overflow-checks = true
