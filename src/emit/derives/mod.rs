@@ -21,11 +21,13 @@
 use crate::gap::GapReason;
 
 mod clone_copy;
-mod eq;
+/// Public to the emit crate so `emit_enum` can call [`eq::compose_enum`] (ONESHOT C2).
+pub(crate) mod eq;
 mod hash;
 mod init;
 mod ord;
-mod show;
+/// Public to the emit crate so `emit_enum` can call [`show::compose_enum`] (ONESHOT C2).
+pub(crate) mod show;
 
 /// Everything a derive row's `emit` needs — the pre-refactor inline arms' closed-over locals,
 /// reified as one struct (DN-136 §2's row shape, adapted to this axis's per-row inputs).
@@ -37,6 +39,16 @@ pub struct DeriveCtx<'a> {
     /// this to interpolate the fired name into its message, byte-identically to the pre-refactor
     /// `"Clone" | "Copy" => { ... "derive({name}) is a satisfied no-op ..." }` arm.
     pub name: &'a str,
+}
+
+/// One enum variant's shape for sum-type derive composition (ONESHOT C2 / DN-128 §2 enum half).
+/// `name` is the already-`valid_ident`-rewritten constructor spelling (e.g. `Exact_kw`);
+/// `field_types` is empty for a unit variant, otherwise the mapped Mycelium field types in
+/// positional order (named-field variants already flattened by `emit_enum`).
+#[derive(Debug, Clone, Copy)]
+pub struct EnumVariantSpec<'a> {
+    pub name: &'a str,
+    pub field_types: &'a [String],
 }
 
 /// A derive row's outcome — the three states [`crate::emit::lower_struct_derives`] (the driver)
@@ -102,7 +114,7 @@ pub fn lookup(name: &str) -> Option<&'static DeriveHandler> {
 /// `Hash` route directly to an already-landed PRIM (`eq`/`bytes_eq`/`hash.blake3`) — a bare `bool`
 /// cannot express that distinction; each row's own `compose` routes per kind (see each row's doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FieldDeriveKind {
+pub(crate) enum FieldDeriveKind {
     /// A leading-uppercase, non-bracketed, non-primitive-repr name (a user-declared type; the
     /// pre-DN-138 boolean gate's sole `true` case). Composes exactly as before this DN — every row
     /// routes it through its own pre-existing user-type call shape (`render`/`init`/`cmp` trait
@@ -152,7 +164,7 @@ pub(super) enum FieldDeriveKind {
 /// by all five field-gating rows. See [`FieldDeriveKind`]'s own doc for why this replaces the
 /// former `field_derive_eligible(&str) -> bool` (DN-136 P1-a).
 #[must_use]
-pub(super) fn field_derive_kind(mapped_ty: &str) -> FieldDeriveKind {
+pub(crate) fn field_derive_kind(mapped_ty: &str) -> FieldDeriveKind {
     if mapped_ty == "Float" {
         return FieldDeriveKind::Float;
     }
@@ -221,7 +233,7 @@ pub(super) fn mangle_ty(ft: &str) -> String {
 /// `crate::checkty::Checker::require_instance`'s own `info.for_ty == concrete` guard would refuse a
 /// bare mismatched call, so this gate keeps that decision at EMIT time).
 #[must_use]
-pub(super) fn is_seeded_scalar_width(ft: &str) -> bool {
+pub(crate) fn is_seeded_scalar_width(ft: &str) -> bool {
     ft == "Binary{64}"
 }
 
@@ -230,7 +242,7 @@ pub(super) fn is_seeded_scalar_width(ft: &str) -> bool {
 /// silent default on a malformed width; `None` only if `ft` is not actually `ScalarBinary`-shaped,
 /// which every call site here already gates on via [`field_derive_kind`]).
 #[must_use]
-pub(super) fn scalar_binary_width(ft: &str) -> Option<u32> {
+pub(crate) fn scalar_binary_width(ft: &str) -> Option<u32> {
     ft.strip_prefix("Binary{")?.strip_suffix('}')?.parse().ok()
 }
 
@@ -242,7 +254,7 @@ pub(super) fn scalar_binary_width(ft: &str) -> Option<u32> {
 /// deliberate small duplication — this axis's rows stay self-contained per-file units, the same
 /// KISS trade-off [`hash`]'s module doc already makes for its own `bytes_concat_chain` copy).
 #[must_use]
-pub(super) fn zero_bin_literal(width: u32) -> String {
+pub(crate) fn zero_bin_literal(width: u32) -> String {
     let mut s = String::with_capacity(2 + width as usize + width as usize / 4);
     s.push_str("0b");
     for i in 0..width {

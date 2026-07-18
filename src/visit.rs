@@ -116,6 +116,11 @@ pub(crate) trait ExprVisitor {
     fn visit_closure(&mut self, expr: &Expr, _c: &syn::ExprClosure) -> Self::Output {
         self.fallback(expr)
     }
+    /// DN-127/M-1090 WU-3: `write!` / `format!` expression macros (other macros fall through to
+    /// `fallback`).
+    fn visit_macro(&mut self, expr: &Expr, _m: &syn::ExprMacro) -> Self::Output {
+        self.fallback(expr)
+    }
 }
 
 /// The single canonical `syn::Expr` dispatch (see module docs) — every `Expr::*`-matching
@@ -143,6 +148,7 @@ pub(crate) fn walk_expr<V: ExprVisitor + ?Sized>(expr: &Expr, v: &mut V) -> V::O
         Expr::Struct(s) => v.visit_struct(expr, s),
         Expr::Cast(c) => v.visit_cast(expr, c),
         Expr::Closure(c) => v.visit_closure(expr, c),
+        Expr::Macro(m) => v.visit_macro(expr, m),
         _ => v.fallback(expr),
     }
 }

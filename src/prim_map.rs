@@ -93,26 +93,37 @@
 //! `src/tests/emit.rs::conversion_noop_method_gaps_never_fabricates_unknown_prim` (the "#72
 //! co-poison fix") asserting `fn f(s: &str) -> String { s.to_owned() }` gaps the WHOLE function —
 //! is resolved by updating that one test's now-stale bare-identifier-receiver case to assert
-//! identity instead (its literal-receiver arm, `"a".to_owned()`, and its `.deref()` case are
-//! untouched and still gap, since a string literal is not a bare-identifier receiver
-//! `crate::emit::expr_env_type` can resolve, and `deref` is not a `TABLE` row).
+//! identity instead. **M-1037 residual** further types string/bool/char *literals* in
+//! [`crate::emit::expr_env_type`], so `"a".to_owned()` / `"a".to_string()` / `"a".clone()` now
+//! also fire the identity rows (fixed Rust types → `Bytes`/`Bool`/`Binary{32}` — never integer/
+//! float literals, whose width is inference-dependent).
 //!
-//! **`to_string` NOT ADDED (gap unchanged).** DN-127/DN-129 landed `impl Show[Binary{64}]`/
-//! `Show[Bytes]`/`Show[Bool] for ...` with `render(x) => Bytes`, and `render(recv)` DOES
-//! `myc-check`-clean (probed) — but `Show` is a **prelude trait seeded conditionally**: "iff some
-//! nodule in the linked env declares an impl of it" (DN-129 §5). The primary `checked_fraction` vet
-//! metric (`crate::vet`) runs the oracle in **single-file** mode; an isolated emitted `.myc` file
-//! has no guarantee that a `Show` impl for the receiver's concrete type is in scope (no automatic
-//! `use std.fmt;` import is emitted anywhere in this pipeline — that is an `emit.rs`-owned,
-//! out-of-scope mechanism). Firing `render(recv)` unconditionally would risk an unresolved-trait
-//! `myc check` failure the row could not predict — exactly the "never guess a real conversion"
-//! instruction this leaf was given. Left gapped, unchanged.
+//! **`to_string` ADDED for `Bytes` only (M-1037 residual).** `str`/`String` both map to the
+//! builtin scalar `Bytes`; `ToString`/`Display` for those types is a content-preserving owned
+//! `String` — representation identity under ADR-003, same orphan-rule soundness as `to_owned`.
+//! Gated on [`ReceiverGate::Exact`]`("Bytes")` — **not** [`AnyBuiltinScalar`]:
+//! `Binary{N}`/`Bool`.to_string()` is Display formatting, not identity. DN-127/DN-129 landed
+//! `impl Show[…]` with `render(x) => Bytes`, and a live probe against `target/debug/myc-check`
+//! confirmed bare `render(recv)` fails single-file as `unknown function/constructor/prim render`
+//! (Show is prelude-seeded only when a linked nodule declares an impl — DN-129 §5; the
+//! `checked_fraction` vet metric is single-file). Emitting `render` for non-Bytes receivers would
+//! fabricate a check-failing call — left gapped with a method-specific EXPLAIN instead (see
+//! `emit::conversion_gap_reason`).
 //!
-//! **`into` NOT ADDED (gap unchanged).** `Into::into`'s target type is determined by Rust's
+//! **`into` NOT ADDED (honest residual gap).** `Into::into`'s target type is determined by Rust's
 //! bidirectional type inference from the *call site's expected type* (an assignment target, a
 //! return position, …) — this `syn`-level, per-expression table has no expected-type context at
 //! all (only [`crate::emit::TypeEnv`]'s *receiver*-type tracking), so "identity when source/target
-//! coincide" is undecidable here without guessing the target. Left gapped, unchanged.
+//! coincide" is undecidable here without guessing the target. Gapped with a method-specific
+//! EXPLAIN (`emit::conversion_gap_reason("into")`), never a fabricated bare `into(recv)`.
+//!
+//! **M-1037 accessor identity rows (`as_ref`/`borrow`/`as_str`/`as_slice`/`deref`).** On a fixed
+//! builtin/primitive mapped receiver (`AnyBuiltinScalar`), these `AsRef`/`Borrow`/`Deref` trait
+//! methods are representation-preserving in value-semantic Mycelium (ADR-003): the receiver passed
+//! through as `(recv)` is exact for the same orphan-rule soundness basis as `clone`/`to_owned`.
+//! `as_mut`/`borrow_mut`/`deref_mut` stay gapped (mutable-reference surface is not value-safe
+//! without DN-125 threading facts). **`to_vec` stays gapped** (not identity — allocates a new
+//! `Seq`; no verified bare-call Seq-copy prim; method-specific EXPLAIN).
 //!
 //! CU-3 (float<->int conversion) is also excluded: DN-34 §8.16 records a *directional* ruling
 //! ("prims for the total directions") but no confirmed prim **name**, and Rust's natural spelling
@@ -313,9 +324,9 @@ pub const TABLE: &[PrimMapping] = &[
     // identity-emission sentinel (see this row's own field doc + the module-doc L4 section):
     // `Clone::clone`'s sole effect is an owned copy with no representation change (value
     // semantics, ADR-003), so the receiver passed through unchanged (via a parenthesized-grouping
-    // `(recv)`) is exact, never a guess. `to_owned` (below) is the same identity class, added by a
-    // follow-on leaf closing the M-1100 residual FLAG. `to_string`/`into` are deliberately NOT rows
-    // here — see the module-doc L4 section for each one's own verify-first finding.
+    // `(recv)`) is exact, never a guess. `to_owned` (below) is the same identity class; M-1037
+    // residual adds `to_string` for Bytes-only. `into` stays deliberately NOT a row — see the
+    // module-doc L4 section for the expected-type undecidability finding.
     PrimMapping {
         rust_method: "clone",
         myc_prim: "",
@@ -385,6 +396,78 @@ pub const TABLE: &[PrimMapping] = &[
                    myc-check-clean by direct probe against target/debug/myc-check for a \
                    Binary{64}/Bool/Bytes receiver (see src/tests/prim_map.rs's committed \
                    regression + live-oracle witness)",
+    },
+    // M-1037 — representation-preserving accessor conversions (same identity sentinel as `clone`).
+    PrimMapping {
+        rust_method: "as_ref",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::AnyBuiltinScalar,
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation: "M-1037; ADR-003 value semantics; AsRef on foreign primitives is std-fixed \
+                   (orphan rule); identity `(recv)` confirmed myc-check-clean for Binary{64}/Bool/\
+                   Bytes receivers (see src/tests/prim_map.rs::m1037_accessor_identity_rows)",
+    },
+    PrimMapping {
+        rust_method: "borrow",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::AnyBuiltinScalar,
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation:
+            "M-1037; ADR-003; Borrow on foreign primitives is std-fixed; identity passthrough",
+    },
+    PrimMapping {
+        rust_method: "as_str",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::AnyBuiltinScalar,
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation: "M-1037; ADR-003; str/String -> Bytes mapping — as_str is representation \
+                   identity on the mapped scalar",
+    },
+    PrimMapping {
+        rust_method: "as_slice",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::AnyBuiltinScalar,
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation: "M-1037; ADR-003; slice view on a mapped builtin scalar is identity when types \
+                   align (conservative AnyBuiltinScalar gate)",
+    },
+    PrimMapping {
+        rust_method: "deref",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::AnyBuiltinScalar,
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation: "M-1037; ADR-003; Deref on foreign primitives is std-fixed; identity \
+                   passthrough for bare-identifier / typed-literal receivers (call receivers still \
+                   gap via gate miss + is_unmappable_conversion_method)",
+    },
+    // M-1037 residual — ToString on Bytes (str/String) is content-preserving identity.
+    // Exact("Bytes") only: Binary{N}/Bool.to_string is Display, not identity (render needs Show).
+    PrimMapping {
+        rust_method: "to_string",
+        myc_prim: "",
+        wired: true,
+        receiver_gate: ReceiverGate::Exact("Bytes"),
+        bridge_binary1_to_bool: false,
+        pending_category: Category::Other,
+        slug: "M-1037",
+        citation: "M-1037 residual; ADR-003; ToString/Display for str/String is owned content \
+                   identity (both map to Bytes per type_map); Exact(Bytes) only — non-Bytes \
+                   receivers gap via conversion_gap_reason (render not single-file safe)",
     },
 ];
 

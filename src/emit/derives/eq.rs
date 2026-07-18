@@ -60,7 +60,7 @@ use std::collections::BTreeMap;
 
 use super::{
     field_derive_kind, mangle_ty, vec_element, DeriveCtx, DeriveHandler, DeriveOutcome,
-    FieldDeriveKind,
+    EnumVariantSpec, FieldDeriveKind,
 };
 use crate::gap::{Category, GapReason};
 
@@ -234,6 +234,161 @@ fn compose(ty_name: &str, field_types: &[String]) -> Result<String, GapReason> {
          => match b {{ {ty_name}({pb}) => {body} }} }};",
         pa = vars_a.join(", "),
         pb = vars_b.join(", ")
+    ));
+    Ok(out)
+}
+
+/// **ONESHOT C2 / DN-128 §2 enum half** — structural equality over a sum type.
+///
+/// Composes `fn eq_<T>(a: T, b: T) => Binary{1} = match a { … };` with one arm per variant:
+/// unit variants compare by tag (`V => match b { V => 0b1, _ => 0b0 }`); payload variants
+/// bind both sides' fields and `and`-fold each field's comparison via [`field_eq_expr`]
+/// (same routing as product structs — `eq`/`bytes_eq`/inline Bool/`eq_<Nested>`/`eq_vec_*`).
+/// The whole derive refuses on any ineligible payload field (never a partial/fabricated
+/// equality, G2). Live-oracle shape confirmed against unit + payload enums (std-fs
+/// `Fallibility`/`FileKind` residual; `Binary{1}` return matches the product-struct row).
+///
+/// **ONESHOT C4 — single-variant residual:** a sum with exactly one constructor has no other
+/// tag for `b` to take, so an inner `_ => 0b0` arm is **unreachable** and the real `myc-check`
+/// refuses the whole file (`this arm is unreachable — earlier arms already cover it`, W7).
+/// Empirically that file-poisoned `std-rand`'s single-variant `RngAlgo = Xoshiro256PlusPlus`
+/// after C2 co-emit (oracle checked_fraction 17.6% → 0%). For `|variants| == 1`:
+/// - **unit:** emit the fieldless-struct form `= 0b1` (one inhabitant ⇒ always equal);
+/// - **payload:** emit the nested match **without** a wildcard (the sole constructor is already
+///   exhaustive). Multi-variant enums keep the `_ => 0b0` tag-mismatch arm (reachable).
+///
+/// **Why this exists outside [`compose`]:** product structs are a single constructor; sum types
+/// need a per-variant outer match. DN-128 scoped enum derives second; this is that second half,
+/// driven from `emit_enum` (not the struct-only [`DeriveHandler`] table — the table's
+/// `field_types` slot cannot encode a variant list without a driver change that would violate
+/// DN-136 §7's "row does not own orchestration" invariant).
+pub(crate) fn compose_enum(
+    ty_name: &str,
+    variants: &[EnumVariantSpec<'_>],
+) -> Result<String, GapReason> {
+    let fname = eq_fn_name(ty_name);
+    if variants.is_empty() {
+        return Err(GapReason::new(
+            Category::DeriveAttr,
+            format!(
+                "enum `{ty_name}` derive(PartialEq): empty enum — no structural equality is \
+                 defined over a zero-variant sum (G2)"
+            ),
+        ));
+    }
+    for (vi, v) in variants.iter().enumerate() {
+        for (fi, ft) in v.field_types.iter().enumerate() {
+            if ft == "Float" {
+                return Err(GapReason::new(
+                    Category::DeriveAttr,
+                    format!(
+                        "enum `{ty_name}` derive(PartialEq): variant {} (`{}`) field {fi} has \
+                         type `Float` — a derived TOTAL equality over a float field is refused \
+                         (ADR-040 §2.4 NaN semantics) — the whole derive is left an honest gap \
+                         rather than a silently-wrong equality (G2)",
+                        vi, v.name
+                    ),
+                ));
+            }
+            if field_eq_expr("p", "q", ft).is_none() {
+                let why = if field_derive_kind(ft) == FieldDeriveKind::VecOf {
+                    format!(
+                        "a `Vec` field whose element type `{}` has no equality route of its own \
+                         (DN-138 WU-4 depth-1 scope)",
+                        vec_element(ft).unwrap_or(ft)
+                    )
+                } else {
+                    "a `Seq`/tuple or other bracketed shape with no structural-equality route yet"
+                        .to_owned()
+                };
+                return Err(GapReason::new(
+                    Category::DeriveAttr,
+                    format!(
+                        "enum `{ty_name}` derive(PartialEq): variant {} (`{}`) field {fi} has \
+                         type `{ft}`, {why} — the whole derive is left an honest gap rather than \
+                         a partial/fabricated equality (G2)",
+                        vi, v.name
+                    ),
+                ));
+            }
+        }
+    }
+    let mut vec_aux: BTreeMap<String, String> = BTreeMap::new();
+    for v in variants {
+        for ft in v.field_types {
+            if field_derive_kind(ft) == FieldDeriveKind::VecOf {
+                if let Some(elem) = vec_element(ft) {
+                    vec_aux
+                        .entry(mangle_ty(elem))
+                        .or_insert_with(|| elem.to_owned());
+                }
+            }
+        }
+    }
+    // ONESHOT C4: single-variant unit enums are one-inhabitant types — equality is trivially
+    // true (same shape as fieldless product structs). Emitting a match with `_ => 0b0` poisons
+    // myc-check (unreachable arm, W7).
+    if variants.len() == 1 && variants[0].field_types.is_empty() {
+        let mut out = String::new();
+        // no vec_aux possible on a unit variant
+        out.push_str(&format!(
+            "fn {fname}(a: {ty_name}, b: {ty_name}) => Binary{{1}} =\n    0b1;"
+        ));
+        return Ok(out);
+    }
+    // ONESHOT C4: a single-variant *payload* enum still needs a field-binding match, but the
+    // inner wildcard is unreachable (only one constructor). Multi-variant keeps `_ => 0b0`.
+    let single_variant = variants.len() == 1;
+    let mut arms: Vec<String> = Vec::with_capacity(variants.len());
+    for v in variants {
+        let n = v.field_types.len();
+        if n == 0 {
+            if single_variant {
+                arms.push(format!("{} => match b {{ {} => 0b1 }}", v.name, v.name));
+            } else {
+                arms.push(format!(
+                    "{} => match b {{ {} => 0b1, _ => 0b0 }}",
+                    v.name, v.name
+                ));
+            }
+            continue;
+        }
+        let vars_a: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+        let vars_b: Vec<String> = (0..n).map(|i| format!("q{i}")).collect();
+        let parts: Vec<String> = v
+            .field_types
+            .iter()
+            .enumerate()
+            .map(|(i, ft)| {
+                field_eq_expr(&vars_a[i], &vars_b[i], ft)
+                    .expect("eligibility already checked above")
+            })
+            .collect();
+        let body = and_chain(&parts);
+        if single_variant {
+            arms.push(format!(
+                "{vn}({pa}) => match b {{ {vn}({pb}) => {body} }}",
+                vn = v.name,
+                pa = vars_a.join(", "),
+                pb = vars_b.join(", "),
+            ));
+        } else {
+            arms.push(format!(
+                "{vn}({pa}) => match b {{ {vn}({pb}) => {body}, _ => 0b0 }}",
+                vn = v.name,
+                pa = vars_a.join(", "),
+                pb = vars_b.join(", "),
+            ));
+        }
+    }
+    let mut out = String::new();
+    for (mangled, elem_ft) in &vec_aux {
+        out.push_str(&vec_eq_aux(mangled, elem_ft));
+        out.push_str("\n\n");
+    }
+    out.push_str(&format!(
+        "fn {fname}(a: {ty_name}, b: {ty_name}) => Binary{{1}} =\n  match a {{ {} }};",
+        arms.join(", ")
     ));
     Ok(out)
 }

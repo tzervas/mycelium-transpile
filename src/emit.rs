@@ -17,8 +17,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use syn::{
     Attribute, Block, Expr, Fields, FieldsNamed, FnArg, GenericArgument, GenericParam, Generics,
-    ImplItem, ItemEnum, ItemFn, ItemImpl, ItemStruct, ItemTrait, Lit, Pat, PathArguments,
-    ReturnType, Signature, Stmt, TraitBoundModifier, TraitItem, TypeParamBound,
+    ImplItem, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemStruct, ItemTrait, Lit, Pat,
+    PathArguments, ReturnType, Signature, Stmt, TraitBoundModifier, TraitItem, TypeParamBound,
 };
 
 // DN-136/P1-a — the emit hook-dispatch axes (Alt B: static per-axis handler tables generalizing
@@ -28,6 +28,7 @@ use syn::{
 // own doc for its axis's ordered-pass-preservation invariant (DN-136 §3/§7).
 mod calls;
 mod derives;
+mod macros;
 mod patterns;
 
 /// One struct's positional field layout — the M-1006 field-projection input (Lever 1): its field
@@ -81,9 +82,17 @@ pub(crate) type TypeEnv = HashMap<String, String>;
 /// operand for the gate below.
 pub(crate) fn expr_env_type(e: &Expr, env: &TypeEnv) -> Option<String> {
     // Routed through `crate::visit::ExprVisitor` (M-1041 Scope-A): a narrow visitor overriding
-    // only the 3 shapes this probe cares about (`visit_path`/`visit_paren`/`visit_reference`),
-    // inheriting `fallback -> None` for every other `Expr` shape -- behaviorally identical to the
-    // pre-refactor hand-written 3-arm `match` + `_ => None` this replaced.
+    // only the shapes this probe cares about (`visit_path`/`visit_paren`/`visit_reference`/
+    // `visit_lit`), inheriting `fallback -> None` for every other `Expr` shape.
+    //
+    // **M-1037 residual — typed literals:** string / bool / char *literals* have a fixed Rust
+    // type independent of context (`&'static str` / `bool` / `char`), so their mapped Mycelium
+    // types (`Bytes` / `Bool` / `Binary{32}`) are decidable without TypeEnv. That unlocks
+    // identity conversion rows (`to_owned`/`clone`/`to_string`/accessors) on literal receivers
+    // that previously fell through to the unmappable-conversion gap (the #72 `"MAP-I".to_owned()`
+    // arm-body residual). Integer/float literals are deliberately NOT typed here — their Rust
+    // type is unconstrained until inference (defaults to `i32`/`f64` but can be any width), so
+    // a guessed Binary{N}/Float would be VR-5-unsafe.
     struct EnvTypeVisitor<'a> {
         env: &'a TypeEnv,
     }
@@ -109,6 +118,17 @@ pub(crate) fn expr_env_type(e: &Expr, env: &TypeEnv) -> Option<String> {
         fn visit_reference(&mut self, _expr: &Expr, r: &syn::ExprReference) -> Self::Output {
             expr_env_type(&r.expr, self.env)
         }
+
+        fn visit_lit(&mut self, _expr: &Expr, l: &syn::ExprLit) -> Self::Output {
+            match &l.lit {
+                Lit::Str(_) => Some("Bytes".to_string()),
+                Lit::Bool(_) => Some("Bool".to_string()),
+                Lit::Char(_) => Some("Binary{32}".to_string()),
+                // Lit::Int / Lit::Float / Lit::Byte / Lit::ByteStr: unconstrained or non-scalar
+                // mapped types — leave unresolved (never guess a width).
+                _ => None,
+            }
+        }
     }
     crate::visit::walk_expr(e, &mut EnvTypeVisitor { env })
 }
@@ -117,6 +137,116 @@ pub(crate) fn expr_env_type(e: &Expr, env: &TypeEnv) -> Option<String> {
 /// `Expr::Binary`'s `&`/`|`/`!=`/`>` emission below reads directly.
 fn expr_env_binary_width(e: &Expr, env: &TypeEnv) -> Option<u32> {
     expr_env_type(e, env).and_then(|t| binary_width(&t))
+}
+
+/// ONESHOT C3: whether a `!` operand is known to be Bool (so logical-not match composition is
+/// honest). Resolves via TypeEnv, Bool literals, and same-file method/call return types recorded
+/// in [`EmitCtx::local_fn_ret`]. Never guesses for an unresolved shape (VR-5) — those keep the
+/// bare `!` glyph (correct for Binary; residual for still-unknown Bool).
+fn unary_not_operand_is_bool(e: &Expr, env: &TypeEnv, self_ty: Option<&str>) -> bool {
+    if expr_env_type(e, env).as_deref() == Some("Bool") {
+        return true;
+    }
+    match e {
+        Expr::Paren(p) => unary_not_operand_is_bool(&p.expr, env, self_ty),
+        Expr::Reference(r) => unary_not_operand_is_bool(&r.expr, env, self_ty),
+        Expr::MethodCall(m) => {
+            let method = m.method.to_string();
+            if local_fn_ret_ty(&method).as_deref() == Some("Bool") {
+                return true;
+            }
+            if let Some(st) = self_ty {
+                let mangled = mangled_inherent_fn_name(st, &method);
+                if local_fn_ret_ty(&mangled).as_deref() == Some("Bool") {
+                    return true;
+                }
+            }
+            // Receiver-typed mangle (when `self` is a typed binding, not only the impl `self_ty`).
+            if let Some(recv_ty) = expr_env_type(&m.receiver, env) {
+                let mangled = mangled_inherent_fn_name(&recv_ty, &method);
+                if local_fn_ret_ty(&mangled).as_deref() == Some("Bool") {
+                    return true;
+                }
+            }
+            false
+        }
+        Expr::Call(c) => {
+            let Expr::Path(p) = c.func.as_ref() else {
+                return false;
+            };
+            if p.qself.is_some() || p.path.segments.len() != 1 {
+                return false;
+            }
+            let name = p.path.segments.last().unwrap().ident.to_string();
+            local_fn_ret_ty(&name).as_deref() == Some("Bool")
+        }
+        _ => false,
+    }
+}
+
+/// Recover the mapped field-type text (`Binary{N}` / `Binary{N}!s`) for a field access
+/// `self.<field>` or a single-arm product projection `match self { Ty(p0, …) => p0 }`, using
+/// the per-file field-*type* map (not the name-only layout — names are not `Binary{N}` text).
+/// Express gap-close residual post-#1645: lit-zero rewrite needs this so signed field compares
+/// to a bare `0` rewrite to equal-width `BinLit` instead of poisoning the file on Q6.
+fn match_field_type_text(e: &Expr, self_ty: Option<&str>) -> Option<String> {
+    if let Expr::Field(f) = e {
+        let base_ty = match f.base.as_ref() {
+            Expr::Path(p) if p.path.is_ident("self") => self_ty.map(|s| s.to_string()),
+            _ => None,
+        }?;
+        // Gate on resolvable layout (constructor exists) AND the parallel type map.
+        let layout = struct_layout(&base_ty)?;
+        let types = struct_field_types(&base_ty)?;
+        let pos = match &f.member {
+            syn::Member::Named(id) => {
+                let n = id.to_string();
+                layout
+                    .iter()
+                    .position(|f| f.as_deref() == Some(n.as_str()))?
+            }
+            syn::Member::Unnamed(idx) => {
+                let i = idx.index as usize;
+                if i < layout.len() {
+                    i
+                } else {
+                    return None;
+                }
+            }
+        };
+        return types.get(pos)?.clone();
+    }
+    let Expr::Match(m) = e else {
+        return None;
+    };
+    if m.arms.len() != 1 {
+        return None;
+    }
+    let arm = &m.arms[0];
+    let Pat::TupleStruct(ts) = &arm.pat else {
+        return None;
+    };
+    // Only the "first-field projection" shape: body is the first binder of a single-ctor product.
+    // Used when source already match-projects (rare) or when a paren-wrapped match is compared.
+    let ty_name = ts
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .or_else(|| self_ty.map(|s| s.to_string()))?;
+    let _layout = struct_layout(&ty_name)?;
+    let types = struct_field_types(&ty_name)?;
+    types.first()?.clone()
+}
+
+/// Recover `Binary{N}` width from field access / match-first-field (unsigned or signed marker).
+fn match_first_field_binary_width(e: &Expr, self_ty: Option<&str>) -> Option<u32> {
+    match_field_type_text(e, self_ty).and_then(|t| binary_width(&t))
+}
+
+/// Recover signed `Binary{N}` width (`!s` marker) from field access / match-first-field.
+fn match_first_field_signed_binary_width(e: &Expr, self_ty: Option<&str>) -> Option<u32> {
+    match_field_type_text(e, self_ty).and_then(|t| signed_binary_width(&t))
 }
 
 /// P4/P5 (DN-99 §8 ENB-6): [`expr_env_type`] narrowed to the **signed**-marked `Binary{N}` case
@@ -178,6 +308,11 @@ fn known_struct_literal_ty(e: &Expr, self_ty: Option<&str>) -> Option<String> {
 struct EmitCtx {
     resolvable: HashSet<String>,
     layouts: HashMap<String, StructLayout>,
+    /// Parallel to [`layouts`]: positional mapped field *types* (`Binary{128}`, or
+    /// `Binary{128}!s` when the Rust field was a signed integer). Used by the binary lit-zero
+    /// rewrite so `self.nanos < 0` can recover width/signedness — layouts alone only store
+    /// field *names* and cannot drive `binary_width` (express residual post-#1645).
+    field_types: HashMap<String, Vec<Option<String>>>,
     symtab: crate::symtab::SymbolTable,
     pub_needed: HashSet<String>,
     /// DN-133 (M-1094) tier (i): mangled inherent-impl associated-fn names (`{Type}__{method}`,
@@ -185,11 +320,29 @@ struct EmitCtx {
     /// left-to-right item pass — see [`record_local_mangled_assoc_fn`]/
     /// [`local_mangled_assoc_fn_known`]. A qualified/associated-fn call site
     /// (`EmitVisitor::visit_call`) is only ever reached AFTER every earlier item in the same
-    /// file has already been dispatched, so this set is exactly "what a call here could
+    /// file has already been dispatched, so this map is exactly "what a call here could
     /// legitimately reference" — an observed fact, never a forward reference or a syntactic
     /// prediction (VR-5/G2, the D4 lesson). Starts empty every file; mutated in place as items
     /// are emitted (unlike the other fields here, which are precomputed before the item loop).
-    local_mangled: HashSet<String>,
+    ///
+    /// **ORACLE-R1 A5:** values are the callee's parameter mapped-type Binary widths
+    /// (`Some(N)` for `Binary{N}`, `None` otherwise), in declaration order — so a later call
+    /// site can rewrite a bare decimal lit arg (`from_nanos(0)`) to an equal-width `BinLit`
+    /// instead of file-poisoning `myc check` with Q6 "bare integer literal has no
+    /// representation family" (the post-Show residual on `ManualClock`'s `impl Default` →
+    /// `impl Init` body).
+    local_mangled: HashMap<String, Vec<Option<u32>>>,
+    /// ONESHOT C3: mapped return-type text for each local inherent / bare fn recorded above
+    /// (`"Bool"`, `"Binary{32}"`, …). Lets `!method(self)` resolve as Bool logical-not when the
+    /// callee was already emitted earlier in this file (std-fs `is_readonly` residual) — never a
+    /// guess for a name not yet recorded (VR-5).
+    local_fn_ret: HashMap<String, String>,
+    /// ONESHOT C3: in-file type names for which `fn eq_<T>` was co-emitted (derive(PartialEq)
+    /// product/enum — C2). Expression-level `==`/`!=` on those user types routes through the
+    /// co-emitted comparator (kernel `eq` is Binary/Ternary-only) instead of the glyph that
+    /// poisons as T-Op on Data types (std-fs `Metadata::is_dir` residual after the Binary !=0
+    /// close).
+    local_eq_types: HashSet<String>,
     /// DN-133 tier (ii): for each locally `use`-imported type NAME in this file (an
     /// `Item::Use` leaf's [`crate::symtab::CandidateKind::Name`]), the ordered cross-nodule
     /// symbol-table lookup key(s) ([`crate::symtab::SymbolTable::candidate_lookup_keys`]) that
@@ -206,6 +359,26 @@ struct EmitCtx {
     /// DN-140 §8②/⑤: first original Rust name recorded for each emitted identifier spelling in
     /// this nodule — catches sentinel/escape self-collisions (never a silent overwrite).
     ident_emission_sources: HashMap<String, String>,
+    /// Bare (un-mangled) inherent method names already emitted in this file — second occurrence
+    /// of the same short name forces D4 mangling (express gap-close / `as_nanos` collision).
+    bare_fn_names: HashSet<String>,
+    /// Names successfully resolved by a `use` in this file's item loop (batch mode only — see
+    /// [`record_imported_name`]). Used by the ORACLE-R1 A2 lattice co-emit gate so a type that
+    /// already arrives via a resolved sibling import is **not** re-declared (duplicate type
+    /// declaration would poison `myc check`).
+    imported_names: HashSet<String>,
+    /// Guarantee-lattice types (`Strength` / `GuaranteeStrength`) requested for co-emission —
+    /// referenced in this file's signatures but neither declared in-file nor successfully
+    /// imported. Drained after the item loop into preamble `type` items (ORACLE-R1 A2).
+    lattice_co_emits: HashSet<String>,
+    /// ORACLE-R1 A4: surface names of private consts co-emitted as zero-arg `fn NAME() =>
+    /// Binary{N} = <BinLit>` (no const item production in the grammar). `visit_path` rewrites a
+    /// bare path `NAME` to `NAME()` so Init/default bodies never file-poison with
+    /// `unknown name DEFAULT_FUEL`. Values live in [`const_int_values`] for same-file path RHS.
+    const_zero_arg_fns: HashSet<String>,
+    /// Integer values of co-emitted consts (and known workspace-floor path RHS) keyed by bare
+    /// name — used only to resolve a later const's path RHS honestly (never fabricated).
+    const_int_values: HashMap<String, u128>,
 }
 
 thread_local! {
@@ -224,6 +397,7 @@ thread_local! {
 pub(crate) fn with_emit_ctx<R>(
     resolvable: HashSet<String>,
     layouts: HashMap<String, StructLayout>,
+    field_types: HashMap<String, Vec<Option<String>>>,
     symtab: crate::symtab::SymbolTable,
     pub_needed: HashSet<String>,
     imported_type_keys: HashMap<String, Vec<String>>,
@@ -233,16 +407,421 @@ pub(crate) fn with_emit_ctx<R>(
         *c.borrow_mut() = Some(EmitCtx {
             resolvable,
             layouts,
+            field_types,
             symtab,
             pub_needed,
-            local_mangled: HashSet::new(),
+            local_mangled: HashMap::new(),
+            local_fn_ret: HashMap::new(),
+            local_eq_types: HashSet::new(),
             imported_type_keys,
             ident_emission_sources: HashMap::new(),
+            bare_fn_names: HashSet::new(),
+            imported_names: HashSet::new(),
+            lattice_co_emits: HashSet::new(),
+            const_zero_arg_fns: HashSet::new(),
+            const_int_values: HashMap::new(),
         })
     });
     let r = f();
     EMIT_CTX.with(|c| *c.borrow_mut() = None);
     r
+}
+
+// ---- ORACLE-R1 A4: private integer const co-emit (DEFAULT_FUEL / DEFAULT_DEPTH) ----------------
+//
+// Mycelium's `item` production has no `const` form (only use/default/type/trait/impl/fn/object/
+// lower/derive). Leaving a bare `DEFAULT_FUEL` path through from `impl Default` → `impl Init`
+// file-poisons myc-check with `unknown name DEFAULT_FUEL` (eval.rs residual post-A2). Hand-port
+// precedent (`lib/compiler/parse.myc` `max_expr_depth()`, `lib/compiler/ambient.myc`, …) co-emits
+// private numeric floors as **zero-arg fns returning a BinLit** at the const's Binary{N} width.
+// Use sites rewrite `NAME` → `NAME()` (G2/VR-5: Declared co-emit + EXPLAIN; value taken only from
+// an integer literal or a known workspace-floor path — never a fabricated number).
+
+/// Public workspace-floor associated-const last segments whose integer value is pinned in source
+/// (and in hand-ports). Last-segment match only — used solely when a private const's RHS is a
+/// path like `RecursionBudget::DEFAULT_DEPTH_LIMIT` (eval.rs `DEFAULT_DEPTH`). Declared table,
+/// not rustc const-eval (VR-5: value is the documented floor `4096`, Exact when source matches).
+const KNOWN_PATH_CONST_VALUES: &[(&str, u128)] = &[("DEFAULT_DEPTH_LIMIT", 4096)];
+
+/// Unsigned integer types this pass will co-emit. Signed/`bool`/`str`/… stay whole-item gaps
+/// (no fabricated two's-complement / string encoding).
+fn const_unsigned_binary_width(ty: &syn::Type) -> Option<u32> {
+    let syn::Type::Path(tp) = ty else {
+        return None;
+    };
+    if tp.qself.is_some() {
+        return None;
+    }
+    let seg = tp.path.segments.last()?;
+    if !matches!(seg.arguments, PathArguments::None) {
+        return None;
+    }
+    match seg.ident.to_string().as_str() {
+        "u8" => Some(8),
+        "u16" => Some(16),
+        "u32" => Some(32),
+        "u64" | "usize" => Some(64),
+        "u128" => Some(128),
+        _ => None,
+    }
+}
+
+/// MSB-first `BinLit` of exactly `width` bits for `value`, nibble-grouped like
+/// [`zero_bin_literal`]. `None` when `value` does not fit in `width` bits (never truncate — VR-5).
+pub(crate) fn u128_bin_literal(value: u128, width: u32) -> Option<String> {
+    if width == 0 || width > 128 {
+        return None;
+    }
+    if width < 128 {
+        let max = (1u128 << width) - 1;
+        if value > max {
+            return None;
+        }
+    }
+    // width == 128: every u128 fits.
+    let mut s = String::with_capacity(2 + width as usize + width as usize / 4);
+    s.push_str("0b");
+    for i in 0..width {
+        if i > 0 && i % 4 == 0 {
+            s.push('_');
+        }
+        let bit = (value >> (width - 1 - i)) & 1;
+        s.push(if bit == 1 { '1' } else { '0' });
+    }
+    Some(s)
+}
+
+fn lookup_const_int_value(name: &str) -> Option<u128> {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        Some(ctx) => ctx.const_int_values.get(name).copied(),
+        None => None,
+    })
+}
+
+fn is_const_zero_arg_fn(name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        Some(ctx) => ctx.const_zero_arg_fns.contains(name),
+        None => false,
+    })
+}
+
+fn record_const_zero_arg_fn(name: &str, value: u128) {
+    EMIT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.const_zero_arg_fns.insert(name.to_string());
+            ctx.const_int_values.insert(name.to_string(), value);
+        }
+    });
+}
+
+/// Extract a non-negative integer from a const initializer when it is honest and decidable:
+/// a decimal/hex/bin `Lit::Int`, a paren-wrapped form of those, a same-file co-emitted const
+/// path, or a last-segment match against [`KNOWN_PATH_CONST_VALUES`]. Everything else → `None`
+/// (caller whole-gaps the const — never guesses a value).
+fn try_const_int_value(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Lit(el) => match &el.lit {
+            Lit::Int(i) => i.base10_parse::<u128>().ok(),
+            _ => None,
+        },
+        Expr::Paren(p) => try_const_int_value(&p.expr),
+        Expr::Path(p) if p.qself.is_none() => {
+            let last = p.path.segments.last()?.ident.to_string();
+            if let Some(v) = lookup_const_int_value(&last) {
+                return Some(v);
+            }
+            KNOWN_PATH_CONST_VALUES
+                .iter()
+                .find(|(n, _)| *n == last)
+                .map(|(_, v)| *v)
+        }
+        _ => None,
+    }
+}
+
+/// ORACLE-R1 A4: co-emit a top-level unsigned integer `const` as a zero-arg fn whose body is a
+/// width-exact `BinLit` (hand-port `max_expr_depth` shape). Gaps when the type is not a plain
+/// unsigned integer, the initializer is not a decidable integer, or the value does not fit the
+/// mapped width — never a fabricated const item or a silent wrong number (G2/VR-5).
+pub fn emit_const(item: &ItemConst) -> Result<Emitted, GapReason> {
+    let raw_name = item.ident.to_string();
+    let Some(width) = const_unsigned_binary_width(&item.ty) else {
+        return Err(GapReason::new(
+            Category::Other,
+            format!(
+                "top-level `const {raw_name}` — co-emit (ORACLE-R1 A4) only covers plain unsigned \
+                 integer types (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`); other types have no const \
+                 item production and no faithful zero-arg-fn encoding (gap, never fabricate)"
+            ),
+        ));
+    };
+    let Some(value) = try_const_int_value(&item.expr) else {
+        return Err(GapReason::new(
+            Category::Other,
+            format!(
+                "top-level `const {raw_name}` — initializer is not a decidable non-negative integer \
+                 literal or a known workspace-floor path (e.g. `RecursionBudget::DEFAULT_DEPTH_LIMIT`); \
+                 no const item production in the grammar, and co-emit refuses to invent a value \
+                 (ORACLE-R1 A4 / VR-5)"
+            ),
+        ));
+    };
+    let Some(body) = u128_bin_literal(value, width) else {
+        return Err(GapReason::new(
+            Category::Other,
+            format!(
+                "top-level `const {raw_name}` — value {value} does not fit in Binary{{{width}}} \
+                 (ORACLE-R1 A4 refuses silent truncation; VR-5)"
+            ),
+        ));
+    };
+
+    let fn_vi = valid_ident(&raw_name);
+    register_ident_emission(&fn_vi, "const co-emit zero-arg fn name")?;
+    let fn_name = fn_vi.text.clone();
+    let mut ident_doc = Vec::new();
+    push_rewrite_doc(&fn_vi, &mut ident_doc);
+
+    // Register under both original and emitted spellings so visit_path rewrites either form.
+    record_const_zero_arg_fn(&raw_name, value);
+    if fn_name != raw_name {
+        record_const_zero_arg_fn(&fn_name, value);
+    }
+    record_bare_fn_name(&fn_name);
+
+    let mut sub_gaps = Vec::new();
+    let non_doc = non_doc_attrs(&item.attrs);
+    if !non_doc.is_empty() {
+        sub_gaps.push(GapReason::new(
+            Category::DeriveAttr,
+            format!(
+                "dropped non-doc attribute(s) on const `{raw_name}`: {}",
+                non_doc.join(" ")
+            ),
+        ));
+    }
+
+    let mut myc = String::new();
+    for d in doc_lines(&item.attrs) {
+        myc.push_str(&d);
+        myc.push('\n');
+    }
+    myc.push_str(
+        "// Declared: co-emitted private const as zero-arg fn returning a BinLit — Mycelium has no \
+         const item production (`item` covers use/default/type/trait/impl/fn/object/lower/derive \
+         only); hand-port precedent `max_expr_depth()` (ORACLE-R1 A4; G2/VR-5: value from the Rust \
+         initializer or a known workspace-floor path, never fabricated). Use sites rewrite \
+         `NAME` → `NAME()`.\n",
+    );
+    for d in &ident_doc {
+        myc.push_str(d);
+        myc.push('\n');
+    }
+    // Decimal in a trailing comment only (EXPLAIN); the body is the paradigm-safe BinLit.
+    myc.push_str(&format!(
+        "fn {fn_name}() => Binary{{{width}}} = {body}; // {value}"
+    ));
+
+    Ok(Emitted {
+        name: fn_name,
+        myc,
+        sub_gaps,
+    })
+}
+
+// ---- ORACLE-R1 A2: guarantee-lattice co-emit ---------------------------------------------------
+//
+// `Strength` (mycelium-l1 AST) and `GuaranteeStrength` (mycelium-core) are isomorphic unit enums
+// over the reserved lattice keywords `Exact|Proven|Empirical|Declared`. When a free fn like
+// `strength_of` references them but the defining enum is **not** in this file and **not**
+// available via a resolved batch `use`, a bare passthrough type name poisons the whole file's
+// `myc check` with `unknown type Strength` (file-level checked_fraction → 0). Co-emitting the
+// same sum type `emit_enum` would produce for that unit enum — with DN-140 `*_kw` variant
+// renames — restores a checkable surface without fabricating language prims (G2/VR-5: Declared
+// co-emit, EXPLAIN comment; never silent). Hand-port precedent: `lib/compiler/*.myc` redeclares
+// `type Strength = GExact | …` in every nodule that needs it.
+
+/// Unit-enum names that are the surface/kernel guarantee lattice (same four reserved variants).
+const LATTICE_TYPE_NAMES: &[&str] = &["Strength", "GuaranteeStrength"];
+
+/// The lattice's four reserved-word variants (DN-140 rewrites each to `*_kw` on emission).
+const LATTICE_VARIANTS: &[&str] = &["Exact", "Proven", "Empirical", "Declared"];
+
+/// Record a name successfully resolved by `transpile::dispatch_use` so lattice co-emit will not
+/// redeclare it.
+pub(crate) fn record_imported_name(name: &str) {
+    EMIT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.imported_names.insert(name.to_string());
+        }
+    });
+}
+
+/// Whether `name` is already available in this file (declared resolvable, imported, or already
+/// queued for lattice co-emit).
+fn lattice_name_available(name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => {
+            ctx.resolvable.contains(name)
+                || ctx.imported_names.contains(name)
+                || ctx.lattice_co_emits.contains(name)
+        }
+    })
+}
+
+/// If `name` is a lattice type and not already available, queue a co-emitted `type` item.
+fn request_lattice_co_emit(name: &str) {
+    if !LATTICE_TYPE_NAMES.contains(&name) {
+        return;
+    }
+    if lattice_name_available(name) {
+        return;
+    }
+    EMIT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.lattice_co_emits.insert(name.to_string());
+        }
+    });
+}
+
+/// Walk a Rust type for bare user-type deps; queue lattice co-emits for any missing lattice names.
+fn note_lattice_deps_from_ty(ty: &syn::Type) {
+    let mut deps = Vec::new();
+    // `field_type_user_deps` returns false when the type is unmappable — nothing to co-emit then
+    // (the surrounding item will gap on map_type for other reasons).
+    let _ = crate::map::field_type_user_deps(ty, &mut deps);
+    for d in deps {
+        request_lattice_co_emit(&d);
+    }
+}
+
+/// Queue lattice co-emits for every user type mentioned in a free-fn / method signature.
+fn note_lattice_deps_from_sig(sig: &Signature) {
+    for input in &sig.inputs {
+        if let FnArg::Typed(pt) = input {
+            note_lattice_deps_from_ty(&pt.ty);
+        }
+    }
+    if let ReturnType::Type(_, ty) = &sig.output {
+        note_lattice_deps_from_ty(ty);
+    }
+}
+
+/// Drain the lattice co-emit set into ordered `(emitted_name, myc_chunk)` pairs. Must be called
+/// **inside** [`with_emit_ctx`] (before the context is cleared) so DN-140 variant renames can
+/// register against the same per-file ident-emission map the item loop used.
+pub(crate) fn drain_lattice_co_emits() -> Vec<(String, String)> {
+    let names: Vec<String> = EMIT_CTX.with(|c| match c.borrow_mut().as_mut() {
+        Some(ctx) => {
+            let mut v: Vec<String> = ctx.lattice_co_emits.drain().collect();
+            v.sort();
+            v
+        }
+        None => Vec::new(),
+    });
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        // Register type name (non-reserved) + each variant via valid_ident so Exact→Exact_kw is
+        // the same rewrite strength_of's match arms already apply (DN-140).
+        let type_vi = valid_ident(&name);
+        if let Err(g) = register_ident_emission(&type_vi, "lattice co-emit type name") {
+            // Collision with a prior emission of a different original → refuse this co-emit
+            // (never silent overwrite). The referencing item stays emitted; myc-check may still
+            // see the type missing — that residual is FLAGged by the collision gap path if the
+            // driver surfaces it. For A2 the lattice names are free in eval.rs.
+            let _ = g;
+            continue;
+        }
+        let mut doc = Vec::new();
+        push_rewrite_doc(&type_vi, &mut doc);
+        let mut ctors = Vec::with_capacity(LATTICE_VARIANTS.len());
+        let mut variant_ok = true;
+        for v in LATTICE_VARIANTS {
+            let vi = valid_ident(v);
+            if register_ident_emission(&vi, "lattice co-emit variant").is_err() {
+                variant_ok = false;
+                break;
+            }
+            push_rewrite_doc(&vi, &mut doc);
+            ctors.push(vi.text);
+        }
+        if !variant_ok {
+            continue;
+        }
+        let mut myc = String::new();
+        myc.push_str(
+            "// Declared: co-emitted guarantee-lattice type — referenced in this file but not \
+             declared here and not available via a resolved batch `use` (ORACLE-R1 A2; never \
+             silent unknown-type file poison — G2/VR-5). Variants use DN-140 `*_kw` renames for \
+             the reserved lattice keywords (Exact/Proven/Empirical/Declared).\n",
+        );
+        for d in &doc {
+            myc.push_str(d);
+            myc.push('\n');
+        }
+        myc.push_str(&format!("type {} = {};", type_vi.text, ctors.join(" | ")));
+        out.push((type_vi.text, myc));
+    }
+    out
+}
+
+// ---- G-α Rank-1: ambient Result / Option co-emit (oracle self-containment) ---------------------
+//
+// myc-check seeds Bool/Unit unconditionally and Vec conditionally (`CONDITIONAL_PRELUDE_TYPE_NAMES`);
+// **Result and Option are not ambient.** Emission already maps Rust `Result<A,E>` / `Option<A>` to
+// surface `Result[A, E]` / `Option[A]`, so free-fns like std-io `read_all => Result[Vec[…], IoError]`
+// file-poison with `unknown type Result` under the live oracle. Live-oracle tests historically
+// injected the same type shape `lib/std/result.myc` / `lib/std/option.myc` declare. Co-emit that
+// **type shape only** (never combinators — VR-5: no fabricated `map`/`and_then`/…) once per file
+// when the assembled body mentions the type head and does not already define it (G2/EXPLAIN).
+
+/// True when `body` already carries a top-level `type {name}[…]` / `type {name} =` definition
+/// (including a prior ambient co-emit or a batch type co-include).
+fn body_defines_type_head(body: &str, name: &str) -> bool {
+    // Match the surface forms this transpiler and `lib/std/{result,option}.myc` emit:
+    //   `type Result[A, E] = …`  /  `type Option[A] = …`  /  unit-sum `type Foo = A | B`
+    body.contains(&format!("type {name}[")) || body.contains(&format!("type {name} ="))
+}
+
+/// True when `body` mentions the generic type head `{name}[…]` (the only form emission produces
+/// for Result/Option). Avoids bare-word false positives in prose comments that name the concept.
+fn body_mentions_type_head(body: &str, name: &str) -> bool {
+    body.contains(&format!("{name}["))
+}
+
+/// G-α Rank-1 / L2-A: if the assembled body mentions `Result[…]` / `Option[…]` and does not already
+/// define those type heads, return ordered `(emitted_name, myc_chunk)` pairs for a one-shot ambient
+/// co-emit. Shape is **byte-identical** to `lib/std/result.myc` / `lib/std/option.myc` type lines;
+/// combinators are intentionally omitted (Declared ambient for oracle self-containment — never a
+/// silent stdlib substitute). Pure over body text — no emit-ctx mutation.
+pub(crate) fn ambient_result_option_preamble(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if body_mentions_type_head(body, "Result") && !body_defines_type_head(body, "Result") {
+        out.push((
+            "Result".to_string(),
+            // EXPLAIN deliberately does NOT embed the full `type Result[…] = …` spelling (that
+            // would make naive substring "once" checks / future define-gates double-count).
+            "// Declared: ambient Result type co-emit — oracle self-containment (G-α Rank-1 / \
+             L2-A). Type shape cites lib/std/result.myc (Ok/Err sum); combinators are NOT \
+             fabricated (VR-5/G2). Checker does not seed Result as prelude (unlike Bool/Unit \
+             unconditional, Vec conditional).\n\
+             type Result[A, E] = Ok(A) | Err(E);"
+                .to_string(),
+        ));
+    }
+    if body_mentions_type_head(body, "Option") && !body_defines_type_head(body, "Option") {
+        out.push((
+            "Option".to_string(),
+            "// Declared: ambient Option type co-emit — oracle self-containment (G-α Rank-1 / \
+             L2-A). Type shape cites lib/std/option.myc (Some/None sum); combinators are NOT \
+             fabricated (VR-5/G2). Checker does not seed Option as prelude (unlike Bool/Unit \
+             unconditional, Vec conditional).\n\
+             type Option[A] = Some(A) | None;"
+                .to_string(),
+        ));
+    }
+    out
 }
 
 /// Re-export for call-site resolution (DN-140 §7).
@@ -293,6 +872,11 @@ fn push_rewrite_doc(vi: &ValidIdent, doc: &mut Vec<String>) {
 
 /// Whether a named-field record named `name` may be emitted under the M-1006 resolvability gate.
 /// Context off (`None`) ⇒ always allowed; on ⇒ allowed iff `name` is resolvable in-file.
+///
+/// **`name` must be the Rust source ident** (e.g. `Substrate`), not a DN-140 `valid_ident`
+/// rewrite (`Substrate_kw`). [`crate::transpile::resolvable_type_names`] keys the set by source
+/// idents; checking the rewritten form false-gaps every reserved-word named-field struct even
+/// when its fields fully resolve (std-io `Substrate` — L2-C residual; G2/VR-5).
 fn named_field_emit_allowed(name: &str) -> bool {
     EMIT_CTX.with(|c| match &*c.borrow() {
         None => true,
@@ -309,6 +893,18 @@ pub(crate) fn struct_layout(name: &str) -> Option<StructLayout> {
     EMIT_CTX.with(|c| match &*c.borrow() {
         None => None,
         Some(ctx) if ctx.resolvable.contains(name) => ctx.layouts.get(name).cloned(),
+        Some(_) => None,
+    })
+}
+
+/// Positional mapped field *types* for the in-file struct `name` (parallel to [`struct_layout`]),
+/// when known and resolvable. Entries are `map_type` text, with a trailing `"!s"` when the Rust
+/// field was a signed integer (same internal marker [`sig_type_env`] uses). `None` when context
+/// is off or the type is not resolvable/emitted.
+fn struct_field_types(name: &str) -> Option<Vec<Option<String>>> {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => None,
+        Some(ctx) if ctx.resolvable.contains(name) => ctx.field_types.get(name).cloned(),
         Some(_) => None,
     })
 }
@@ -364,28 +960,242 @@ pub(crate) fn cross_nodule_has_module(module_key: &str) -> bool {
     })
 }
 
+/// L2-B: does `module_key` have a baseline single-line type def for `name`? Used by
+/// `transpile::dispatch_use` to choose co-include vs full-path `use`.
+pub(crate) fn cross_nodule_has_type_def(module_key: &str, name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => ctx.symtab.type_def(module_key, name).is_some(),
+    })
+}
+
+/// G-α L2-B non-type: does `module_key` have a baseline single-line free-fn def for `name`?
+pub(crate) fn cross_nodule_has_fn_def(module_key: &str, name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => ctx.symtab.fn_def(module_key, name).is_some(),
+    })
+}
+
+/// G-α L2-B non-type: baseline free-fn line for `name` in `module_key`, when present.
+pub(crate) fn cross_nodule_fn_def(module_key: &str, name: &str) -> Option<String> {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => None,
+        Some(ctx) => ctx.symtab.fn_def(module_key, name).map(str::to_owned),
+    })
+}
+
+/// L2-B: transitive type-def co-include set for seed `(module_key, name)` pairs.
+/// Empty when the context is off or no seed has a type def in the table.
+pub(crate) fn cross_nodule_type_def_closure(seeds: &[(String, String)]) -> Vec<(String, String)> {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => Vec::new(),
+        Some(ctx) => ctx.symtab.type_def_closure(seeds),
+    })
+}
+
+/// G-α L2-B non-type: free-fn co-include lines for seed `(module_key, name)` pairs.
+pub(crate) fn cross_nodule_fn_def_lines(seeds: &[(String, String)]) -> Vec<(String, String)> {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => Vec::new(),
+        Some(ctx) => ctx.symtab.fn_def_lines(seeds),
+    })
+}
+
+/// Whether `name` is already available in this file (declared resolvable, imported, or lattice
+/// co-emitted) — L2-B skips re-co-including a name the consumer already has.
+pub(crate) fn name_already_available(name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => {
+            ctx.resolvable.contains(name)
+                || ctx.imported_names.contains(name)
+                || ctx.lattice_co_emits.contains(name)
+        }
+    })
+}
+
 /// DN-133 (M-1094) tier (i): record that this file's own single-pass emission just successfully
 /// produced the mangled inherent-impl associated-fn `mangled_name` (`mangled_inherent_fn_name`'s
 /// `{Type}__{method}` form) — called once, from `emit_impl`'s success path, right after it renames
 /// such a method, so a LATER call site in the SAME file can resolve against it (see
-/// [`local_mangled_assoc_fn_known`]). No-op when the context is off (`None` — direct `emit_impl`
-/// unit tests never install a context, so this degrades to always-absent, matching every OTHER
-/// `EmitCtx`-gated behavior's off-mode).
-fn record_local_mangled_assoc_fn(mangled_name: &str) {
+/// [`local_mangled_assoc_fn_known`]). `param_tys` is the mapped signature params
+/// (`(name, Binary{N}|…)`); their Binary widths power ORACLE-R1 A5 call-arg lit rewrite. No-op
+/// when the context is off (`None` — direct `emit_impl` unit tests never install a context, so
+/// this degrades to always-absent, matching every OTHER `EmitCtx`-gated behavior's off-mode).
+fn record_local_mangled_assoc_fn(mangled_name: &str, param_tys: &[(String, String)], ret_ty: &str) {
+    let widths: Vec<Option<u32>> = param_tys.iter().map(|(_, ty)| binary_width(ty)).collect();
     EMIT_CTX.with(|c| {
         if let Some(ctx) = c.borrow_mut().as_mut() {
-            ctx.local_mangled.insert(mangled_name.to_string());
+            ctx.local_mangled.insert(mangled_name.to_string(), widths);
+            // Return-type bookkeeping for UnOp::Not / Bool `!=` composition (ONESHOT C3).
+            // Empty/`unit`-shaped returns are still recorded honestly — consumers that need a
+            // specific type (`Bool`) match exactly; never invent a default.
+            if !ret_ty.is_empty() {
+                ctx.local_fn_ret
+                    .insert(mangled_name.to_string(), ret_ty.to_string());
+            }
         }
     });
+}
+
+/// ONESHOT C3: mapped return type of a local inherent/bare fn already recorded this file.
+/// `None` when unknown or emit context is off — never a fabricated type (VR-5).
+fn local_fn_ret_ty(name: &str) -> Option<String> {
+    EMIT_CTX.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|ctx| ctx.local_fn_ret.get(name).cloned())
+    })
+}
+
+/// ONESHOT C3: record that `fn eq_<ty_name>` was co-emitted for this file (derive PartialEq).
+fn record_local_eq_type(ty_name: &str) {
+    EMIT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.local_eq_types.insert(ty_name.to_string());
+        }
+    });
+}
+
+/// ONESHOT C3: whether `fn eq_<ty_name>` is known to have been co-emitted this file.
+fn local_eq_type_known(ty_name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => ctx.local_eq_types.contains(ty_name),
+    })
+}
+
+/// ONESHOT C3: recover a **user-named** (non-builtin) type for an expression used in `==`/`!=`,
+/// so we can route through a co-emitted `eq_<T>`. Builtins (`Bool`/`Bytes`/`Binary{N}`) return
+/// `None` — those have their own arms. Never guesses (VR-5).
+fn expr_user_named_type(e: &Expr, env: &TypeEnv, self_ty: Option<&str>) -> Option<String> {
+    let is_user = |t: &str| -> bool {
+        t != "Bool"
+            && t != "Bytes"
+            && binary_width(t).is_none()
+            && signed_binary_width(t).is_none()
+            && !t.starts_with("Vec[")
+            && !t.starts_with("Option[")
+            && !t.starts_with("Result[")
+    };
+    if let Some(t) = expr_env_type(e, env) {
+        if is_user(&t) {
+            return Some(t);
+        }
+    }
+    if let Some(t) = match_field_type_text(e, self_ty) {
+        // Strip signed marker if present (user types never carry it, but be safe).
+        let bare = t.strip_suffix("!s").unwrap_or(&t);
+        if is_user(bare) {
+            return Some(bare.to_string());
+        }
+    }
+    match e {
+        Expr::Paren(p) => expr_user_named_type(&p.expr, env, self_ty),
+        Expr::Reference(r) => expr_user_named_type(&r.expr, env, self_ty),
+        // `Type::Variant` / `Type::assoc` — the head segment is the type name when this is a
+        // unit-variant path used in `kind == FileKind::File`.
+        Expr::Path(p) if p.qself.is_none() && p.path.segments.len() == 2 => {
+            let head = p.path.segments.first()?.ident.to_string();
+            if is_user(&head) && local_eq_type_known(&head) {
+                Some(head)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// DN-133 tier (i): whether `mangled_name` was already recorded via
 /// [`record_local_mangled_assoc_fn`] — an EARLIER item in this same file's own left-to-right pass
 /// really did emit it. `false` when the context is off.
-fn local_mangled_assoc_fn_known(mangled_name: &str) -> bool {
+pub(crate) fn local_mangled_assoc_fn_known(mangled_name: &str) -> bool {
     EMIT_CTX.with(|c| match &*c.borrow() {
         None => false,
-        Some(ctx) => ctx.local_mangled.contains(mangled_name),
+        Some(ctx) => ctx.local_mangled.contains_key(mangled_name),
+    })
+}
+
+/// ORACLE-R1 A5: per-parameter Binary widths for a known local mangled assoc fn.
+/// `None` when the name is unknown or the emit context is off.
+fn local_mangled_param_binary_widths(mangled_name: &str) -> Option<Vec<Option<u32>>> {
+    EMIT_CTX.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|ctx| ctx.local_mangled.get(mangled_name).cloned())
+    })
+}
+
+/// Rewrite a bare decimal integer literal to an equal-width Mycelium `BinLit` when it fits in
+/// `width` bits (shared by comparison lit-zero rewrite and ORACLE-R1 A5 call-arg rewrite).
+/// `None` when `e` is not an int lit, the digits do not parse, or the value does not fit.
+fn int_lit_as_bin_literal(e: &Expr, width: u32) -> Option<String> {
+    let Expr::Lit(el) = e else {
+        return None;
+    };
+    let Lit::Int(i) = &el.lit else {
+        return None;
+    };
+    let digits = i.base10_digits();
+    let Ok(v) = digits.parse::<u128>() else {
+        return None;
+    };
+    if v == 0 {
+        return Some(zero_bin_literal(width));
+    }
+    let mut bits = format!("{v:b}");
+    if bits.len() as u32 > width {
+        return None;
+    }
+    while (bits.len() as u32) < width {
+        bits.insert(0, '0');
+    }
+    let mut s = String::from("0b");
+    for (i, c) in bits.chars().enumerate() {
+        if i > 0 && i % 4 == 0 {
+            s.push('_');
+        }
+        s.push(c);
+    }
+    Some(s)
+}
+
+/// Express gap-close (2026-07-16): bare top-level fn names already used in this file's emit
+/// (inherent methods left un-mangled on first occurrence). Second use forces D4 mangling.
+pub(crate) fn bare_fn_name_taken(name: &str) -> bool {
+    EMIT_CTX.with(|c| match &*c.borrow() {
+        None => false,
+        Some(ctx) => ctx.bare_fn_names.contains(name),
+    })
+}
+
+pub(crate) fn record_bare_fn_name(name: &str) {
+    EMIT_CTX.with(|c| {
+        if let Some(ctx) = c.borrow_mut().as_mut() {
+            ctx.bare_fn_names.insert(name.to_string());
+        }
+    });
+}
+
+/// Claim a bare top-level fn name for this file's emission. Returns `true` if this is the **first**
+/// claim (caller should emit the body) and `false` if the name is already taken (caller must **not**
+/// re-emit — would file-poison myc-check with `duplicate function`). Used by derive aux helpers
+/// (`show_vec_*` / eventual `eq_vec_*`) so two structs with the same `Vec[ELEM]` field shape share
+/// one helper (std-io `Substrate`+`Sink` both need `show_vec_Binary_8_` after L2-C type emission).
+/// Context off ⇒ always `true` (single-item tests have no cross-struct collision surface).
+pub(crate) fn claim_bare_fn_name(name: &str) -> bool {
+    EMIT_CTX.with(|c| match c.borrow_mut().as_mut() {
+        None => true,
+        Some(ctx) => {
+            if ctx.bare_fn_names.contains(name) {
+                false
+            } else {
+                ctx.bare_fn_names.insert(name.to_string());
+                true
+            }
+        }
     })
 }
 
@@ -460,12 +1270,12 @@ pub fn non_doc_attrs(attrs: &[Attribute]) -> Vec<String> {
         .collect()
 }
 
-/// [`non_doc_attrs`] narrowed to exclude `#[derive(...)]` as well (DN-128/M-1086) — used only by
-/// [`emit_struct`], whose derive list is classified/lowered separately (see the "DN-128 std-derive
-/// lowering library" section below) rather than bulk-dropped. Every OTHER non-doc attribute on a
-/// struct (`#[repr(C)]`, an unrecognized macro attribute, …) still falls through to the same
-/// unconditional-drop `Category::DeriveAttr` sub-gap `non_doc_attrs` backs everywhere else
-/// (`enum`/`fn`/impl-method sites, unchanged by this leaf).
+/// [`non_doc_attrs`] narrowed to exclude `#[derive(...)]` as well (DN-128/M-1086) — used by
+/// [`emit_struct`] and [`emit_enum`], whose derive lists are classified/lowered separately (see
+/// the "DN-128 std-derive lowering library" section below; ONESHOT C2 enum half) rather than
+/// bulk-dropped. Every OTHER non-doc attribute (`#[repr(C)]`, an unrecognized macro attribute, …)
+/// still falls through to the same unconditional-drop `Category::DeriveAttr` sub-gap
+/// `non_doc_attrs` backs at fn/impl-method sites.
 fn non_doc_non_derive_attrs(attrs: &[Attribute]) -> Vec<String> {
     attrs
         .iter()
@@ -683,7 +1493,9 @@ fn bounded_impl_type_params(generics: &Generics) -> Result<Vec<String>, GapReaso
 /// [`sig_type_env`]'s doc for why that opacity is load-bearing for `Expr::Cast`, and
 /// [`signed_binary_width`] for the marker-aware counterpart.
 pub(crate) fn binary_width(ty_text: &str) -> Option<u32> {
-    ty_text
+    // Accept plain `Binary{N}` and the signed env marker `Binary{N}!s` (sig_type_env).
+    let plain = ty_text.strip_suffix("!s").unwrap_or(ty_text);
+    plain
         .strip_prefix("Binary{")
         .and_then(|rest| rest.strip_suffix('}'))
         .and_then(|digits| digits.parse::<u32>().ok())
@@ -716,10 +1528,11 @@ fn type_is_float(ty: &syn::Type) -> bool {
 /// now maps every one of these to the SAME `Binary{N}` text as its unsigned counterpart (`Binary`
 /// is sign-free, ADR-028) — so signedness can no longer be read back off the *mapped* type text.
 /// This probe reads it off the ORIGINAL `syn::Type` instead, at the one place it is still known
-/// (a fn/method parameter's declared Rust type, in [`map_signature`]) — purely transpile-time
+/// (a fn/method parameter's declared Rust type, in [`map_signature`]; or a struct field's declared
+/// type when seeding the per-file field-type map for lit-zero rewrite) — purely transpile-time
 /// bookkeeping that is never itself emitted into `.myc` text (mirrors [`type_is_float`]'s shape;
 /// never a guess — VR-5).
-fn type_is_signed_int(ty: &syn::Type) -> bool {
+pub(crate) fn type_is_signed_int(ty: &syn::Type) -> bool {
     matches!(ty, syn::Type::Path(tp)
     if tp.qself.is_none()
         && tp.path.segments.last().is_some_and(|s| {
@@ -757,6 +1570,10 @@ fn zero_bin_literal(width: u32) -> String {
 /// the canonical `ToOwned`/`Clone`/`ToString`/`Into`/`AsRef`/`Borrow`/`Deref` accessors whose sole
 /// effect is ownership/representation identity, never an operation that computes a value.
 fn is_unmappable_conversion_method(method: &str) -> bool {
+    // Methods with a `prim_map` identity row (`clone`/`to_owned`/`to_string`(Bytes)/M-1037
+    // accessors) are handled there first when their gate matches; this catch-all covers gate
+    // misses (user types, unresolved receivers, non-Bytes `to_string`) and deliberately withheld
+    // conversions (`into`/`to_vec`/mutable accessors).
     matches!(
         method,
         "to_owned"
@@ -773,6 +1590,43 @@ fn is_unmappable_conversion_method(method: &str) -> bool {
             | "deref"
             | "deref_mut"
     )
+}
+
+/// Method-specific EXPLAIN for residual conversion gaps (M-1037 residual). Prefer a precise
+/// never-silent reason over the shared generic ownership-no-op text when the method has its own
+/// verify-first finding (into target undetermined; to_vec not identity; to_string non-Bytes needs
+/// Show/render).
+fn conversion_gap_reason(method: &str) -> String {
+    match method {
+        "into" => {
+            "Rust `.into()` (Into::into) target type is determined by call-site expected-type \
+             inference; this per-expression emitter has no expected-type context, so identity \
+             when source/target coincide is undecidable without guessing the target — gapped \
+             rather than fabricating bare `into(recv)` (M-1037 residual, G2/VR-5; ADR-003)"
+                .to_string()
+        }
+        "to_vec" => {
+            "Rust `.to_vec()` allocates a new owned Seq (not a value-semantic identity); no \
+             verified bare-call Seq-copy prim is wired in this pipeline — gapped rather than \
+             fabricating bare `to_vec(recv)` (M-1037 residual, G2/VR-5)"
+                .to_string()
+        }
+        "to_string" => {
+            "Rust `.to_string()` on a non-`Bytes` receiver needs Show/render (DN-127), but \
+             single-file myc-check does not guarantee a Show impl is in scope — and `render(recv)` \
+             checks as `unknown function/constructor/prim render` without one. Bytes receivers \
+             use the prim_map identity row; every other receiver is gapped rather than fabricating \
+             bare `to_string(recv)` (M-1037 residual, G2/VR-5)"
+                .to_string()
+        }
+        other => format!(
+            "Rust ownership/identity-conversion no-op method `.{other}()` has no \
+             Mycelium free-function/prim referent (value semantics — ADR-003); \
+             desugaring it to a bare `{other}(recv)` would fabricate an unknown \
+             prim (`unknown function/constructor/prim `{other}`` — verified \
+             against the oracle), so it is gapped, never fake-emitted (G2/VR-5)"
+        ),
+    }
 }
 
 /// If `trait_name`/`method` identify a `Widen::widen` method whose `Self`/target both map to
@@ -1871,7 +2725,7 @@ fn reconstruct_positional(
 /// `\u{..}` form (grammar §StrLit note, lines 424-428), so such a char *cannot* be faithfully
 /// represented (G2/VR-5). Every other char — including non-ASCII like `μ` — is a valid `StrChar`
 /// (`[^"\\\n\r]`, line 431) that lowers to its UTF-8 bytes (line 427), so it is emitted verbatim.
-fn myc_string_literal(value: &str) -> Result<String, GapReason> {
+pub(crate) fn myc_string_literal(value: &str) -> Result<String, GapReason> {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for c in value.chars() {
@@ -1993,7 +2847,13 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
             .last()
             .ok_or_else(|| GapReason::new(Category::Other, "empty path expression"))?;
         let name = seg.ident.to_string();
-        resolve_surface_ident(&name, "value/constructor reference")
+        let resolved = resolve_surface_ident(&name, "value/constructor reference")?;
+        // ORACLE-R1 A4: a private const co-emitted as a zero-arg fn must be *called* — a bare
+        // name is `unknown name DEFAULT_FUEL` at myc-check (no const binding in the surface).
+        if is_const_zero_arg_fn(&name) || is_const_zero_arg_fn(&resolved) {
+            return Ok(format!("{resolved}()"));
+        }
+        Ok(resolved)
     }
 
     fn visit_lit(&mut self, _expr: &Expr, l: &syn::ExprLit) -> Self::Output {
@@ -2125,8 +2985,98 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
 
     fn visit_binary(&mut self, _expr: &Expr, b: &syn::ExprBinary) -> Self::Output {
         use syn::BinOp;
-        let lhs = emit_expr(&b.left, self.self_ty, self.env)?;
-        let rhs = emit_expr(&b.right, self.self_ty, self.env)?;
+        // Express gap-close: a bare decimal lit on one side of a Binary comparison has no
+        // paradigm (Q6) and wrong width. When the other operand is known Binary{N}, rewrite
+        // the lit to an equal-width BinLit zero/value so `lt`/`eq` can fire cleanly.
+        // ONESHOT C3: the same rewrite applies to bitwise `&`/`|`/`^` — a mask lit (`0o400`)
+        // paired with a known-width field is the std-fs `Permissions::owner_read` residual
+        // (`mode & 0o400 != 0`); leaving the decimal lit forces Q6/band/ne poison.
+        let lit_as_bin =
+            |e: &Expr, width: u32| -> Option<String> { int_lit_as_bin_literal(e, width) };
+        let field_bin_w = |e: &Expr| -> Option<u32> {
+            let Expr::Paren(p) = e else {
+                return match_first_field_binary_width(e, self.self_ty);
+            };
+            match_first_field_binary_width(&p.expr, self.self_ty)
+        };
+        let field_signed_w = |e: &Expr| -> Option<u32> {
+            let Expr::Paren(p) = e else {
+                return match_first_field_signed_binary_width(e, self.self_ty);
+            };
+            match_first_field_signed_binary_width(&p.expr, self.self_ty)
+        };
+        let width_from_myc = |s: &str| -> Option<u32> {
+            // Recover `Binary{N}` from emitted projection text.
+            let i = s.find("Binary{")?;
+            let rest = &s[i + "Binary{".len()..];
+            let end = rest.find('}')?;
+            rest[..end].parse().ok()
+        };
+        // ONESHOT C3: recover Binary{N} width through bitwise/arith chains so
+        // `(self.mode & 0o400) != 0` sees the field's width on the Ne left (field_bin_w alone
+        // only matches a bare field / match-projection, not a BitAnd of one). Width-preserving
+        // ops only — never invent a width for an unmatched shape (VR-5).
+        fn chain_bin_w(
+            e: &Expr,
+            env: &TypeEnv,
+            field_bin_w: &dyn Fn(&Expr) -> Option<u32>,
+        ) -> Option<u32> {
+            if let Some(w) = expr_env_binary_width(e, env).or_else(|| field_bin_w(e)) {
+                return Some(w);
+            }
+            match e {
+                Expr::Paren(p) => chain_bin_w(&p.expr, env, field_bin_w),
+                Expr::Reference(r) => chain_bin_w(&r.expr, env, field_bin_w),
+                Expr::Binary(inner)
+                    if matches!(
+                        &inner.op,
+                        BinOp::BitAnd(_)
+                            | BinOp::BitOr(_)
+                            | BinOp::BitXor(_)
+                            | BinOp::Shl(_)
+                            | BinOp::Shr(_)
+                            | BinOp::Add(_)
+                            | BinOp::Sub(_)
+                            | BinOp::Mul(_)
+                    ) =>
+                {
+                    chain_bin_w(&inner.left, env, field_bin_w)
+                        .or_else(|| chain_bin_w(&inner.right, env, field_bin_w))
+                }
+                _ => None,
+            }
+        }
+        let lw = chain_bin_w(&b.left, self.env, &field_bin_w);
+        let rw = chain_bin_w(&b.right, self.env, &field_bin_w);
+        let lhs_raw = emit_expr(&b.left, self.self_ty, self.env)?;
+        let rhs_raw = emit_expr(&b.right, self.self_ty, self.env)?;
+        let lw = lw.or_else(|| width_from_myc(&lhs_raw));
+        let rw = rw.or_else(|| width_from_myc(&rhs_raw));
+        let is_cmp = matches!(
+            &b.op,
+            BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Gt(_) | BinOp::Le(_) | BinOp::Ge(_)
+        );
+        let is_bitwise = matches!(&b.op, BinOp::BitAnd(_) | BinOp::BitOr(_) | BinOp::BitXor(_));
+        // Rewrite decimal/octal/hex int lits on comparisons AND bitwise ops (ONESHOT C3).
+        let rewrite_lits = is_cmp || is_bitwise;
+        let lhs = if rewrite_lits {
+            if let Some(w) = rw {
+                lit_as_bin(&b.left, w).unwrap_or_else(|| lhs_raw.clone())
+            } else {
+                lhs_raw.clone()
+            }
+        } else {
+            lhs_raw.clone()
+        };
+        let rhs = if rewrite_lits {
+            if let Some(w) = lw {
+                lit_as_bin(&b.right, w).unwrap_or_else(|| rhs_raw.clone())
+            } else {
+                rhs_raw.clone()
+            }
+        } else {
+            rhs_raw.clone()
+        };
         // trx2 Lane C Deliverable 1 — operand-type-gated operator emission (VERIFY-FIRST,
         // mitigation #14; every claim below is a *measured* `myc check` result over the built
         // `target/debug/myc`, not a doc-derived guess — see the crate's `src/tests/emit.rs`
@@ -2176,8 +3126,22 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
         // `expr_env_binary_width` (only a bare identifier already in `env` can ever resolve —
         // never a guess, VR-5); an unresolved operand keeps the prior, unchanged glyph
         // emission (Declared heuristic, exactly as before this deliverable).
-        let both_known_binary = expr_env_binary_width(&b.left, self.env).is_some()
-            && expr_env_binary_width(&b.right, self.env).is_some();
+        // Peer Binary known on both sides (original gate). Lit rewrite for comparisons AND
+        // bitwise (ONESHOT C3 — mask-lit residual).
+        let lit_rewrote = rewrite_lits
+            && ((lw.is_some() && lit_as_bin(&b.right, lw.unwrap()).is_some())
+                || (rw.is_some() && lit_as_bin(&b.left, rw.unwrap()).is_some()));
+        // One known Binary side + a rewritten equal-width lit is enough for and/or/ne composition
+        // (the rewritten lit *is* Binary{N} of that width).
+        let both_known_binary = lw.is_some() && rw.is_some();
+        let binary_with_lit = lit_rewrote && (lw.is_some() || rw.is_some());
+        // ONESHOT C3: Bool-typed operands for logical `==`/`!=` (kernel `eq` is Binary/Ternary
+        // only — confirmed myc-check T-Op on `Bool == Bool`). Compose the corpus `bool_eq`/
+        // inverted shape (`lib/std/cmp.myc`), never a fabricated `bool_ne` prim.
+        let left_ty = expr_env_type(&b.left, self.env);
+        let right_ty = expr_env_type(&b.right, self.env);
+        let both_known_bool =
+            left_ty.as_deref() == Some("Bool") && right_ty.as_deref() == Some("Bool");
         // P4/P5 (DN-99 §8 ENB-6 / M-1029 / ADR-028; VERIFY-FIRST, mitigation #14 — every claim
         // below is a *measured* `myc check` result over the built `target/debug/myc-check`, not a
         // doc-derived guess, mirroring the Deliverable-1 probes above; see this crate's
@@ -2211,34 +3175,113 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
         // for an unsigned `Binary{N}` operand stay the PRE-EXISTING (already-broken, out of
         // scope) plain-glyph form; this leaf only adds new signed-specific coverage, never
         // regresses the unsigned path.
-        let both_known_signed_binary = expr_env_signed_binary_width(&b.left, self.env).is_some()
-            && expr_env_signed_binary_width(&b.right, self.env).is_some();
+        // Signedness: bare params via env (`!s` marker) OR in-file struct fields via the
+        // field-type map. A decimal lit has no env entry — so a signed field/param compared
+        // to a rewritten zero must still route to `lt_s` (ADR-028 signed order). Using
+        // unsigned `lt` for `self.nanos < 0` would mis-order high-bit payloads (G2/VR-5).
+        let left_signed_w =
+            expr_env_signed_binary_width(&b.left, self.env).or_else(|| field_signed_w(&b.left));
+        let right_signed_w =
+            expr_env_signed_binary_width(&b.right, self.env).or_else(|| field_signed_w(&b.right));
+        let both_known_signed_binary = left_signed_w.is_some() && right_signed_w.is_some();
+        // One known-signed Binary side + a lit rewritten to equal-width BinLit (the other side).
+        let signed_lit_cmp = lit_rewrote && (left_signed_w.is_some() || right_signed_w.is_some());
+        let use_signed_order = both_known_signed_binary || signed_lit_cmp;
         match &b.op {
             // RFC-0032 D1 (ratified): `==`/`<` glyphs are the canonical surface for `eq`/`lt`
             // — left unchanged (not part of this deliverable's operand-gated rewrite).
+            // Glyph `==`/`<` stay when both sides are already Binary idents (fixture corpus /
+            // D1). Bridge to `match eq/lt {… Bool}` only when a decimal lit was rewritten to a
+            // BinLit (otherwise bare `x < 0` fails Q6 ambient).
+            // ONESHOT C3: Bool `==` is NOT the Binary `eq` prim — compose corpus `bool_eq`.
+            BinOp::Eq(_) if both_known_bool => Ok(format!(
+                "match ({lhs}) {{ True => ({rhs}), False => match ({rhs}) {{ True => False, \
+                 False => True }} }}"
+            )),
+            // ONESHOT C3: user-type `==` via co-emitted `eq_<T>` (C2 PartialEq) — kernel `eq`
+            // rejects Data types (std-fs `kind == FileKind::File` residual).
+            BinOp::Eq(_)
+                if {
+                    let lt = expr_user_named_type(&b.left, self.env, self.self_ty);
+                    let rt = expr_user_named_type(&b.right, self.env, self.self_ty);
+                    matches!((lt.as_deref(), rt.as_deref()), (Some(a), Some(b)) if a == b && local_eq_type_known(a))
+                } =>
+            {
+                let ty = expr_user_named_type(&b.left, self.env, self.self_ty).unwrap();
+                Ok(format!(
+                    "(match eq_{ty}({lhs}, {rhs}) {{ 0b1 => True, _ => False }})"
+                ))
+            }
+            BinOp::Eq(_) if lit_rewrote => Ok(format!(
+                "(match eq({lhs}, {rhs}) {{ 0b1 => True, _ => False }})"
+            )),
             BinOp::Eq(_) => Ok(format!("{lhs} == {rhs}")),
-            BinOp::Lt(_) if both_known_signed_binary => Ok(format!(
+            BinOp::Lt(_) if use_signed_order => Ok(format!(
                 "(match lt_s({lhs}, {rhs}) {{ 0b1 => True, _ => False }})"
             )),
-            BinOp::Lt(_) => Ok(format!("{lhs} < {rhs}")),
-            BinOp::Ne(_) if both_known_binary || both_known_signed_binary => Ok(format!(
-                "(match eq({lhs}, {rhs}) {{ 0b1 => False, _ => True }})"
+            BinOp::Lt(_) if lit_rewrote => Ok(format!(
+                "(match lt({lhs}, {rhs}) {{ 0b1 => True, _ => False }})"
             )),
+            BinOp::Lt(_) => Ok(format!("{lhs} < {rhs}")),
+            // ONESHOT C3: `!=` composes from `eq` whenever we have two known Binary sides OR a
+            // Binary+rewritten-lit pair (the metadata `mode & mask != 0` residual — previously
+            // only `both_known_binary` fired, so a known Binary vs `0` fell through to the
+            // glyph → unknown prim `ne`). Bool `!=` composes the inverted `bool_eq` shape.
+            BinOp::Ne(_) if both_known_bool => Ok(format!(
+                "match ({lhs}) {{ True => match ({rhs}) {{ True => False, False => True }}, \
+                 False => ({rhs}) }}"
+            )),
+            BinOp::Ne(_)
+                if {
+                    let lt = expr_user_named_type(&b.left, self.env, self.self_ty);
+                    let rt = expr_user_named_type(&b.right, self.env, self.self_ty);
+                    matches!((lt.as_deref(), rt.as_deref()), (Some(a), Some(b)) if a == b && local_eq_type_known(a))
+                } =>
+            {
+                let ty = expr_user_named_type(&b.left, self.env, self.self_ty).unwrap();
+                Ok(format!(
+                    "(match eq_{ty}({lhs}, {rhs}) {{ 0b1 => False, _ => True }})"
+                ))
+            }
+            BinOp::Ne(_) if both_known_binary || binary_with_lit || use_signed_order => Ok(
+                format!("(match eq({lhs}, {rhs}) {{ 0b1 => False, _ => True }})"),
+            ),
             BinOp::Ne(_) => Ok(format!("{lhs} != {rhs}")),
-            BinOp::Gt(_) if both_known_signed_binary => Ok(format!(
+            BinOp::Gt(_) if use_signed_order => Ok(format!(
                 "(match eq({lhs}, {rhs}) {{ 0b1 => False, _ => match lt_s({lhs}, {rhs}) {{ 0b1 \
                  => False, _ => True }} }})"
             )),
-            BinOp::Gt(_) if both_known_binary => Ok(format!(
+            BinOp::Gt(_) if both_known_binary || binary_with_lit => Ok(format!(
                 "(match eq({lhs}, {rhs}) {{ 0b1 => False, _ => match lt({lhs}, {rhs}) {{ 0b1 \
                  => False, _ => True }} }})"
             )),
             BinOp::Gt(_) => Ok(format!("{lhs} > {rhs}")),
-            BinOp::And(_) => Ok(format!("{lhs} && {rhs}")),
-            BinOp::Or(_) => Ok(format!("{lhs} || {rhs}")),
-            BinOp::BitAnd(_) if both_known_binary => Ok(format!("and({lhs}, {rhs})")),
+            // ONESHOT C2 — Rust `&&`/`||` are *logical* Bool connectives. The glyphs desugar
+            // (parse.rs AmpAmp/PipePipe) to the words `"and"`/`"or"`, which are the Binary
+            // bitwise prims (`bit.and`/`bit.or`, checkty prim_kernel_name) — so a bare `a || b`
+            // on Bool fails `myc check` with T-Op
+            // `` `or` does not accept argument types [Bool, Bool] `` (std-fs `OpenOptions::wants_write`
+            // residual). There is no ambient `bool_or`/`bool_and` prim (lib/compiler redeclares
+            // them per-nodule as match folds). Emit the same total match shape the corpus uses
+            // (`lib/std/content.myc`, `lib/compiler/parse.myc`) — always, because Rust `&&`/`||`
+            // are never Binary bitwise (`&`/`|` are). Short-circuit is not modelled (value-
+            // semantics total evaluation; matches the corpus helpers — Declared vs Rust's
+            // short-circuit, disclosed).
+            BinOp::And(_) => Ok(format!(
+                "match ({lhs}) {{ True => ({rhs}), False => False }}"
+            )),
+            BinOp::Or(_) => Ok(format!(
+                "match ({lhs}) {{ True => True, False => ({rhs}) }}"
+            )),
+            // ONESHOT C3: bitwise `&`/`|` also fire when one side is a rewritten equal-width
+            // mask lit (std-fs `mode & 0o400`).
+            BinOp::BitAnd(_) if both_known_binary || binary_with_lit => {
+                Ok(format!("and({lhs}, {rhs})"))
+            }
             BinOp::BitAnd(_) => Ok(format!("{lhs} & {rhs}")),
-            BinOp::BitOr(_) if both_known_binary => Ok(format!("or({lhs}, {rhs})")),
+            BinOp::BitOr(_) if both_known_binary || binary_with_lit => {
+                Ok(format!("or({lhs}, {rhs})"))
+            }
             BinOp::BitOr(_) => Ok(format!("{lhs} | {rhs}")),
             // `^` already desugars to the correct prim name (`"xor"`, parse.rs:2384) — no
             // rewrite needed; confirmed `myc check`-clean as a bare glyph.
@@ -2305,6 +3348,16 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
                 Ok(format!("neg_s({operand})"))
             }
             syn::UnOp::Neg(_) => Ok(format!("-{operand}")),
+            // ONESHOT C3 — Rust `!` on Bool is *logical* not; the glyph desugars to word `"not"`
+            // (parse.rs Bang → "not"), which is the Binary bitwise prim (`bit.not`) — so `!b` on
+            // Bool fails T-Op `` `not` does not accept argument types [Bool] `` (std-fs
+            // `Permissions::is_readonly` residual). There is no ambient `bool_not` prim; the
+            // corpus defines it per-nodule as a total match (`lib/std/core.myc` `bool_not`).
+            // Compose that match when the operand is known Bool (env / method-return bookkeeping);
+            // keep the bare glyph for known Binary (already myc-check-clean) or unresolved.
+            syn::UnOp::Not(_) if unary_not_operand_is_bool(&u.expr, self.env, self.self_ty) => Ok(
+                format!("match ({operand}) {{ True => False, False => True }}"),
+            ),
             syn::UnOp::Not(_) => Ok(format!("!{operand}")),
             _ => Err(GapReason::new(
                 Category::Other,
@@ -2356,8 +3409,22 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
         // M-1001: a call to a function whose name is a reserved word (e.g. a Rust `.swap()`
         // method or a `to(..)` helper) would emit un-parseable text; gap it (VR-5/G2).
         let func = resolve_surface_ident(&func, "call target")?;
+        // ORACLE-R1 A5: when the callee is a same-file mangled inherent assoc fn whose params
+        // are known Binary{N}, rewrite bare decimal lit args to equal-width BinLit (so
+        // `MonoInstant::from_nanos(0)` / `WallInstant::from_nanos_since_epoch(0)` in a hand-
+        // written `Default` → `Init` body never Q6-poison the file after Show is clean).
+        let param_widths = local_mangled_param_binary_widths(&func);
         let mut args = Vec::with_capacity(c.args.len());
-        for a in &c.args {
+        for (i, a) in c.args.iter().enumerate() {
+            if let Some(w) = param_widths
+                .as_ref()
+                .and_then(|ws| ws.get(i).copied().flatten())
+            {
+                if let Some(bin) = int_lit_as_bin_literal(a, w) {
+                    args.push(bin);
+                    continue;
+                }
+            }
             args.push(emit_expr(a, self.self_ty, self.env)?);
         }
         Ok(format!("{func}({})", args.join(", ")))
@@ -2415,6 +3482,85 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
                 });
             }
         }
+        // M-1037 — `.ne(other)` is `PartialEq::ne`; bare `ne(recv, other)` fabricates the same
+        // non-prim `lib/std/cmp.myc` surface that `!=` already avoids (see `visit_binary`'s
+        // composed-`eq` arm). When both operands resolve to a known `Binary{N}` (or Binary +
+        // equal-width lit — ONESHOT C3), emit that faithful composition; Bool uses the inverted
+        // `bool_eq` match. Otherwise gap never-silently (VR-5/G2).
+        if method_name == "ne" && m.args.len() == 1 {
+            let recv_w = expr_env_binary_width(&m.receiver, self.env);
+            let arg_w = expr_env_binary_width(&m.args[0], self.env);
+            let both_known_binary = recv_w.is_some() && arg_w.is_some();
+            let both_known_signed_binary = expr_env_signed_binary_width(&m.receiver, self.env)
+                .is_some()
+                && expr_env_signed_binary_width(&m.args[0], self.env).is_some();
+            let both_bool = expr_env_type(&m.receiver, self.env).as_deref() == Some("Bool")
+                && expr_env_type(&m.args[0], self.env).as_deref() == Some("Bool");
+            let arg_as_bin = recv_w.and_then(|w| int_lit_as_bin_literal(&m.args[0], w));
+            let recv_as_bin = arg_w.and_then(|w| int_lit_as_bin_literal(&m.receiver, w));
+            let lit_ok = arg_as_bin.is_some() || recv_as_bin.is_some();
+            if both_bool || both_known_binary || both_known_signed_binary || lit_ok {
+                let lhs = if let Some(bin) = recv_as_bin {
+                    bin
+                } else {
+                    emit_expr(&m.receiver, self.self_ty, self.env)?
+                };
+                let rhs = if let Some(bin) = arg_as_bin {
+                    bin
+                } else {
+                    emit_expr(&m.args[0], self.self_ty, self.env)?
+                };
+                if both_bool {
+                    return Ok(format!(
+                        "match ({lhs}) {{ True => match ({rhs}) {{ True => False, False => True }}, \
+                         False => ({rhs}) }}"
+                    ));
+                }
+                return Ok(format!(
+                    "(match eq({lhs}, {rhs}) {{ 0b1 => False, _ => True }})"
+                ));
+            }
+            return Err(GapReason::new(
+                Category::Other,
+                "Rust `.ne()` method has no faithful bare `ne(recv, arg)` referent (same \
+                 class as `!=` — cmp.myc's `ne` is not a bare-call prim); operands did not \
+                 both resolve to a known `Binary{N}` for the composed `eq` lowering, so it \
+                 is gapped rather than fabricated (M-1037, G2/VR-5)",
+            ));
+        }
+        // M-1037 — atomics / unmapped std methods that must never desugar to fabricated bare calls.
+        if matches!(
+            method_name.as_str(),
+            "fetch_add" | "fetch_sub" | "fetch_and" | "fetch_or" | "fetch_xor"
+        ) {
+            return Err(GapReason::new(
+                Category::Other,
+                format!(
+                    "PENDING-BACKEND(CU-8): atomic `.{method_name}()` needs a memory-model RFC \
+                     surface — desugaring to `{method_name}(recv, …)` would fabricate an unknown \
+                     prim (M-1037, G2/VR-5)"
+                ),
+            ));
+        }
+        if method_name == "contains" {
+            return Err(GapReason::new(
+                Category::Other,
+                "Rust `.contains()` has no verified bare-call kernel prim mapping in this \
+                 pipeline; desugaring to `contains(recv, …)` would fabricate an unknown prim — \
+                 gapped never-silently (M-1037, G2/VR-5)",
+            ));
+        }
+        if method_name.starts_with("saturating_") {
+            return Err(GapReason::new(
+                Category::Other,
+                format!(
+                    "Rust `.{method_name}` is saturating (silent clamp) — Mycelium has no \
+                     saturating prim surface; desugaring to `{method_name}(…)` would fabricate \
+                     an unknown prim or lie about overflow (G2/VR-5). Gap never-silently \
+                     (express gap-close 2026-07-16)."
+                ),
+            ));
+        }
         // A Rust **ownership/identity-conversion no-op method** (`ToOwned::to_owned`,
         // `Clone::clone`, `ToString::to_string`, `Into::into`, `AsRef`/`Borrow` accessors, …)
         // has NO Mycelium free-function or prim referent: Mycelium is value-semantic (ADR-003),
@@ -2422,33 +3568,135 @@ impl crate::visit::ExprVisitor for EmitVisitor<'_> {
         // to a bare `to_owned(recv)` FABRICATES a call to a non-existent prim (`myc check`:
         // `unknown function/constructor/prim to_owned`), which is exactly the never-silent
         // violation the house rules forbid (G2/VR-5). Gap it explicitly instead of emitting a
-        // check-failing surface. (This is the #72 co-poison fix: the string-literal-`match`
-        // enabler (M-1035) let `checkty::vsa_kernel_model_id`'s match emit, but its arm bodies
-        // are `"MAP-I".to_owned()` — without this gap, the fabricated `to_owned` poisons the
-        // whole file under the vet loop's file-gated all-or-nothing `checked_fraction`.)
+        // check-failing surface. Methods with a `prim_map` identity row fire above when their
+        // receiver gate matches; this arm is the never-silent residual (gate miss, user type,
+        // or deliberately withheld conversion — `into`/`to_vec`/non-Bytes `to_string`).
+        // M-1037 residual: per-method EXPLAIN via [`conversion_gap_reason`].
         if is_unmappable_conversion_method(&method_name) {
             return Err(GapReason::new(
                 Category::Other,
-                format!(
-                    "Rust ownership/identity-conversion no-op method `.{method_name}()` has no \
-                     Mycelium free-function/prim referent (value semantics — ADR-003); \
-                     desugaring it to a bare `{method_name}(recv)` would fabricate an unknown \
-                     prim (`unknown function/constructor/prim `{method_name}`` — verified \
-                     against the oracle), so it is gapped, never fake-emitted (G2/VR-5)"
-                ),
+                conversion_gap_reason(&method_name),
             ));
+        }
+        // rotate_left/right: no kernel prim (FLAG-math-3); compose from bin.shl/bin.shr when
+        // the receiver maps to Binary{N} and the shift arg is emit-able — never fabricate
+        // `rotate_left` (G2; express gap-close 2026-07-16, unblocks std-rand rotl64).
+        if method_name == "rotate_left" || method_name == "rotate_right" {
+            let recv = emit_expr(&m.receiver, self.self_ty, self.env)?;
+            if m.args.len() != 1 {
+                return Err(GapReason::new(
+                    Category::Other,
+                    format!(
+                        "`.{method_name}(k)` expects exactly one shift arg; got {}",
+                        m.args.len()
+                    ),
+                ));
+            }
+            let k = emit_expr(&m.args[0], self.self_ty, self.env)?;
+            let width = expr_env_type(&m.receiver, self.env)
+                .and_then(|t| binary_width(&t))
+                .or_else(|| self.self_ty.and_then(binary_width));
+            let Some(n) = width else {
+                return Err(GapReason::new(
+                    Category::Other,
+                    format!(
+                        "`.{method_name}` composition needs a known Binary{{N}} receiver \
+                         width (TypeEnv); gapped rather than fabricating `rotate_left` \
+                         (FLAG-math-3 / G2)"
+                    ),
+                ));
+            };
+            let n_lit = zero_bin_literal(n);
+            // Surface prims are `shl_u`/`shr_u`/`sub_u` (checkty), not bare `shl`/`shr`.
+            let k_n = format!("width_cast({k}, {n_lit})");
+            let n_minus_k = format!("sub_u({n_lit}, {k_n})");
+            let body = if method_name == "rotate_left" {
+                format!("or(shl_u({recv}, {k_n}), shr_u({recv}, {n_minus_k}))")
+            } else {
+                format!("or(shr_u({recv}, {k_n}), shl_u({recv}, {n_minus_k}))")
+            };
+            return Ok(body);
         }
         // Declared mapping decision: the grammar's `app_expr` has no postfix method-call
         // form (`primary ('(' args? ')')*` only) — desugar `recv.method(args)` to
         // `method(recv, args...)`, matching how `lib/std/cmp.myc`'s free functions
         // (`cmp`/`le`/`ge`/...) take the receiver as an ordinary first argument.
-        let method_name = resolve_surface_ident(&method_name, "method call")?;
+        //
+        // D4 / express gap-close: if the receiver's TypeEnv type has a locally mangled
+        // inherent method (always true for same-file inherent emits after 2026-07-16),
+        // call the mangled name so declaration/call stay in sync.
+        //
+        // **G-β Rank A (never-fabricate free-fn method-call, 2026-07-17):** only emit the
+        // bare/mangled free-fn form when that exact name is a **proven** same-file emission
+        // ([`local_mangled_assoc_fn_known`] / [`bare_fn_name_taken`]) — the same resolution
+        // discipline DN-133 applies to qualified `Type::method` calls. Emitting an
+        // unregistered bare name (e.g. `read_to_end(src)` after `Source::read_to_end`'s body
+        // gapped on `.to_vec()`) file-poisons `myc-check` with
+        // `unknown function/constructor/prim read_to_end` and is exactly the G2/VR-5
+        // fabrication the house rules forbid. Gap the call site honestly instead (the free
+        // fn may then fail to emit rather than emit-and-poison the whole file).
+        let rust_method = method_name.clone();
+        let mut method_name = resolve_surface_ident(&method_name, "method call")?;
+        let mut known_emitted = false;
+        if let Some(recv_ty) = expr_env_type(&m.receiver, self.env) {
+            let mangled = mangled_inherent_fn_name(&recv_ty, &method_name);
+            if local_mangled_assoc_fn_known(&mangled) {
+                method_name = mangled;
+                known_emitted = true;
+            }
+        } else if let Some(st) = self.self_ty {
+            let mangled = mangled_inherent_fn_name(st, &method_name);
+            if local_mangled_assoc_fn_known(&mangled) {
+                method_name = mangled;
+                known_emitted = true;
+            }
+        }
+        if !known_emitted {
+            // Bare un-mangled inherent method (first claim of a self-receiver) is recorded
+            // under its bare name — see `emit_impl`'s success path.
+            known_emitted =
+                local_mangled_assoc_fn_known(&method_name) || bare_fn_name_taken(&method_name);
+        }
+        if !known_emitted {
+            return Err(GapReason::new(
+                Category::Other,
+                format!(
+                    "method call `.{rust_method}(...)` has no proven-emitted free-fn referent in \
+                     this file (neither a D4-mangled inherent `Type__{rust_method}` nor a bare \
+                     inherent recorded by this file's left-to-right pass, nor a prim_map / \
+                     combinator row). Emitting bare `{rust_method}(recv, …)` would fabricate an \
+                     unknown prim and file-poison myc-check (G-β Rank A / G2/VR-5; residual when \
+                     the method body itself gapped — e.g. M-1037 `.to_vec()` inside \
+                     `read_to_end` — so the declaration was never registered)"
+                ),
+            ));
+        }
         let recv = emit_expr(&m.receiver, self.self_ty, self.env)?;
         let mut args = vec![recv];
         for a in &m.args {
             args.push(emit_expr(a, self.self_ty, self.env)?);
         }
         Ok(format!("{method_name}({})", args.join(", ")))
+    }
+
+    fn visit_macro(&mut self, _expr: &Expr, m: &syn::ExprMacro) -> Self::Output {
+        if m.mac.path.is_ident("format") || m.mac.path.is_ident("write") {
+            macros::try_lower_expr_macro(&m.mac, self.self_ty, self.env)
+        } else {
+            Err(GapReason::new(
+                Category::MacroInvocation,
+                format!(
+                    "expression-position macro `{}` — no macro system in this grammar fragment \
+                     (`write!`/`format!` lower to pure `Bytes` per DN-127/M-1090 WU-3)",
+                    m.mac
+                        .path
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                        .unwrap_or_default()
+                ),
+            ))
+        }
     }
 
     fn visit_paren(&mut self, _expr: &Expr, p: &syn::ExprParen) -> Self::Output {
@@ -3878,7 +5126,15 @@ fn lower_struct_derives(
                         name: &name,
                     };
                     match (handler.emit)(&ctx) {
-                        derives::DeriveOutcome::Composed(myc) => impls.push(myc),
+                        derives::DeriveOutcome::Composed(myc) => {
+                            // ONESHOT C3: PartialEq composes `fn eq_<T>` — record so expression-
+                            // level `==`/`!=` on this user type can call it (kernel `eq` is
+                            // Binary/Ternary-only).
+                            if name == "PartialEq" {
+                                record_local_eq_type(ty_name);
+                            }
+                            impls.push(myc);
+                        }
                         derives::DeriveOutcome::Satisfied(note) => sub_gaps.push(note),
                         derives::DeriveOutcome::Gap(g) => sub_gaps.push(g),
                     }
@@ -3903,6 +5159,13 @@ fn lower_struct_derives(
 }
 
 /// `enum` -> `type_item` (`type Name = C1 | C2(T1, T2) | ...;`).
+///
+/// **ONESHOT C2 (DN-128 §2 enum half):** after the type declaration, lower recognized
+/// `#[derive(...)]` names the same way product structs do — `PartialEq` → `fn eq_<T>`
+/// ([`derives::eq::compose_enum`]), `Debug` → `impl Show[T]` ([`derives::show::compose_enum`]),
+/// `Clone`/`Copy` → satisfied no-op notes. This closes the residual where a parent struct's
+/// derived `eq_MatrixRow` called `eq_Fallibility` / `eq_FileKind` / `eq_GuaranteeTag` that never
+/// existed because enum derives were bulk-dropped as `DeriveAttr` sub-gaps.
 pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
     let enum_vi = valid_ident(&item.ident.to_string());
     register_ident_emission(&enum_vi, "enum type name")?;
@@ -3915,18 +5178,24 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
     // to such an enum *after* mapping (below), so an unmappable field still surfaces its own precise
     // reason first (an honest gap profile: "String field" is a repr gap, not a resolution gap).
     let mut has_named_variant = false;
-    let non_doc = non_doc_attrs(&item.attrs);
-    if !non_doc.is_empty() {
+    // Non-derive non-doc attrs still bulk-drop (e.g. `#[repr(...)]`); derive attrs are handled
+    // by [`lower_enum_derives`] after the type text is composed — never silently. Uses the same
+    // filter [`emit_struct`] already uses (DN-128) so derive lists are not double-reported.
+    let non_derive_non_doc = non_doc_non_derive_attrs(&item.attrs);
+    if !non_derive_non_doc.is_empty() {
         sub_gaps.push(GapReason::new(
             Category::DeriveAttr,
             format!(
-                "dropped non-doc attribute(s) on enum `{}`: {}",
+                "dropped non-doc non-derive attribute(s) on enum `{}`: {}",
                 item.ident,
-                non_doc.join(" ")
+                non_derive_non_doc.join(" ")
             ),
         ));
     }
     let mut ctors = Vec::with_capacity(item.variants.len());
+    // Parallel to `ctors`: rewritten variant name + mapped payload field types (for derive
+    // composition). Unit variants carry an empty field list.
+    let mut variant_shapes: Vec<(String, Vec<String>)> = Vec::with_capacity(item.variants.len());
     for v in &item.variants {
         let variant_vi = valid_ident(&v.ident.to_string());
         register_ident_emission(&variant_vi, "enum variant/constructor")?;
@@ -3943,7 +5212,10 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
             ));
         }
         match &v.fields {
-            Fields::Unit => ctors.push(variant_name),
+            Fields::Unit => {
+                variant_shapes.push((variant_name.clone(), Vec::new()));
+                ctors.push(variant_name);
+            }
             Fields::Unnamed(fields) => {
                 let mut tys = Vec::with_capacity(fields.unnamed.len());
                 for f in &fields.unnamed {
@@ -3960,6 +5232,7 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
                     tys.push(mapped);
                 }
                 ctors.push(format!("{variant_name}({})", tys.join(", ")));
+                variant_shapes.push((variant_name, tys));
             }
             Fields::Named(fields) => {
                 // Named-field variant `Ctor { a: T, b: U }` -> positional `Ctor(T, U)` (grammar
@@ -3990,6 +5263,7 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
                     ),
                 ));
                 ctors.push(format!("{variant_name}({})", tys.join(", ")));
+                variant_shapes.push((variant_name, tys));
             }
         }
     }
@@ -3997,7 +5271,9 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
     // wins): an enum with a named-field variant only emits when it resolves in-file — otherwise
     // emitting that variant positionally would introduce an out-of-file reference that poisons the
     // file's `myc check`, costing its clean items. An enum with no named-field variant is unaffected.
-    if has_named_variant && !named_field_emit_allowed(&enum_name) {
+    // Gate on the **Rust source ident** (not DN-140 `enum_name` rewrite) — see
+    // [`named_field_emit_allowed`].
+    if has_named_variant && !named_field_emit_allowed(&item.ident.to_string()) {
         return Err(GapReason::new(
             Category::PayloadVariant,
             format!(
@@ -4029,11 +5305,150 @@ pub fn emit_enum(item: &ItemEnum) -> Result<Emitted, GapReason> {
         params_text,
         ctors.join(" | ")
     ));
+    let (derive_impls, derive_gaps) = lower_enum_derives(
+        &enum_name,
+        &item.attrs,
+        &variant_shapes,
+        !type_params.is_empty(),
+    );
+    for imp in derive_impls {
+        myc.push_str("\n\n");
+        myc.push_str(&imp);
+    }
+    sub_gaps.extend(derive_gaps);
     Ok(Emitted {
         name: enum_name,
         myc,
         sub_gaps,
     })
+}
+
+/// ONESHOT C2 — classify + lower an enum's `#[derive(...)]` list against the sum-type half of
+/// the DN-128 standard-derive set (`PartialEq` → [`derives::eq::compose_enum`], `Debug` →
+/// [`derives::show::compose_enum`], `Clone`/`Copy` → satisfied no-op). Mirrors
+/// [`lower_struct_derives`]'s orchestration for products: every derive name is either composed,
+/// noted as satisfied, or recorded as a sub-gap (G2 — never silently dropped). Bare `Eq` is
+/// deliberately NOT recognized (same collision reason as the product row — co-occurs with
+/// `PartialEq`). `Hash`/`PartialOrd`/`Ord`/`Default` stay unrecognized on enums for this leaf
+/// (product-only rows for those; FLAG residual).
+fn lower_enum_derives(
+    ty_name: &str,
+    attrs: &[Attribute],
+    variant_shapes: &[(String, Vec<String>)],
+    is_generic: bool,
+) -> (Vec<String>, Vec<GapReason>) {
+    let mut impls = Vec::new();
+    let mut sub_gaps = Vec::new();
+    let mut unrecognized = Vec::new();
+
+    // Rebuild EnumVariantSpec views once (lifetime over variant_shapes).
+    let specs: Vec<derives::EnumVariantSpec<'_>> = variant_shapes
+        .iter()
+        .map(|(name, fields)| derives::EnumVariantSpec {
+            name: name.as_str(),
+            field_types: fields.as_slice(),
+        })
+        .collect();
+
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let Ok(list) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+        ) else {
+            sub_gaps.push(GapReason::new(
+                Category::DeriveAttr,
+                format!(
+                    "dropped derive attribute on enum `{ty_name}` (argument list did not parse \
+                     as a plain trait-path list): {}",
+                    tokens_to_string(attr)
+                ),
+            ));
+            continue;
+        };
+        for path in list {
+            let name = tokens_to_string(&path);
+            match name.as_str() {
+                "PartialEq" => {
+                    if is_generic {
+                        sub_gaps.push(GapReason::new(
+                            Category::DeriveAttr,
+                            format!(
+                                "enum `{ty_name}` derive(PartialEq): generic enum — a derived \
+                                 equality fn for a generic type needs DN-130's generic-instance \
+                                 mechanism, out of this leaf's scope (ONESHOT C2 / DN-128 enum half)"
+                            ),
+                        ));
+                    } else {
+                        match derives::eq::compose_enum(ty_name, &specs) {
+                            Ok(myc) => {
+                                // ONESHOT C3: same bookkeeping as product PartialEq.
+                                record_local_eq_type(ty_name);
+                                impls.push(myc);
+                            }
+                            Err(g) => sub_gaps.push(g),
+                        }
+                    }
+                }
+                "Debug" => {
+                    if is_generic {
+                        sub_gaps.push(GapReason::new(
+                            Category::DeriveAttr,
+                            format!(
+                                "enum `{ty_name}` derive(Debug): generic enum — a derived Show \
+                                 impl for a generic type needs DN-130's generic-trait-instance \
+                                 mechanism, out of this leaf's scope (ONESHOT C2 / DN-128 enum half)"
+                            ),
+                        ));
+                    } else {
+                        match derives::show::compose_enum(ty_name, &specs) {
+                            Ok(myc) => impls.push(myc),
+                            Err(g) => sub_gaps.push(g),
+                        }
+                    }
+                }
+                "Clone" | "Copy" => {
+                    sub_gaps.push(GapReason::new(
+                        Category::DeriveSatisfied,
+                        format!(
+                            "enum `{ty_name}` derive({name}) is a satisfied no-op under \
+                             Mycelium's value semantics (ADR-003 — every value already copies \
+                             structurally; DN-128 §6.1) — not emitted as an impl, not a gap"
+                        ),
+                    ));
+                }
+                // Bare Eq co-occurs with PartialEq; recognizing it would double-emit eq_* (same
+                // collision the product row documents). Silently skip is wrong (G2) — record as
+                // satisfied-via-PartialEq note rather than an unrecognized gap that looks like
+                // "we forgot Eq".
+                "Eq" => {
+                    sub_gaps.push(GapReason::new(
+                        Category::DeriveSatisfied,
+                        format!(
+                            "enum `{ty_name}` derive(Eq): covered by co-occurring PartialEq → \
+                             `fn eq_{ty_name}` (product-row collision policy; DN-128 / ONESHOT C2) \
+                             — not a second emission"
+                        ),
+                    ));
+                }
+                _ => unrecognized.push(name),
+            }
+        }
+    }
+    if !unrecognized.is_empty() {
+        sub_gaps.push(GapReason::new(
+            Category::DeriveAttr,
+            format!(
+                "enum `{ty_name}` derive(...) names {} not in the DN-128 enum-derive set this \
+                 leaf builds (Debug/PartialEq/Clone/Copy recognized; bare Eq is a satisfied \
+                 co-occurrence note; Hash/PartialOrd/Ord/Default stay product-only for now) — \
+                 dropped, no confirmed Mycelium surface",
+                unrecognized.join(", ")
+            ),
+        ));
+    }
+    (impls, sub_gaps)
 }
 
 /// `struct` -> a single-constructor `type_item`. Unit, all-positional (`Fields::Unnamed`), and
@@ -4099,7 +5514,10 @@ pub fn emit_struct(item: &ItemStruct) -> Result<Emitted, GapReason> {
             // resolves in-file — otherwise the emission would introduce an out-of-file reference
             // (e.g. a sibling-crate/kernel type) that poisons the file's `myc check`, costing its
             // clean items. When gated out, keep the honest named-field refusal.
-            if !named_field_emit_allowed(&struct_name) {
+            // Gate on the **Rust source ident** (not DN-140 `struct_name` rewrite) — see
+            // [`named_field_emit_allowed`]. Reserved-word structs like std-io `Substrate` rewrite
+            // to `Substrate_kw` on emission but stay keyed as `Substrate` in the resolvable set.
+            if !named_field_emit_allowed(&item.ident.to_string()) {
                 return Err(GapReason::new(
                     Category::Struct,
                     format!(
@@ -4178,6 +5596,11 @@ pub fn emit_fn(item: &ItemFn) -> Result<Emitted, GapReason> {
     let mut ident_doc = Vec::new();
     push_rewrite_doc(&fn_vi, &mut ident_doc);
     check_fn_modifiers(&item.sig)?;
+    // ORACLE-R1 A2: before mapping the signature, queue co-emits for any missing guarantee-
+    // lattice types the params/return mention (so strength_of etc. never file-poison with
+    // `unknown type Strength`). Must run even when map_signature later fails for other reasons —
+    // co-emit is driven by the Rust surface, not the mapped text.
+    note_lattice_deps_from_sig(&item.sig);
     let sig = map_signature(&item.sig.generics, &item.sig.inputs, &item.sig.output, None)?;
     // DN-125 (M-1081): a free fn's `&mut T` parameter(s) route through the value-threading body
     // emitter instead of the ordinary one (a free fn has no receiver, so only S2 applies here).
@@ -4647,6 +6070,43 @@ pub fn emit_impl(item: &ItemImpl) -> Result<Emitted, GapReason> {
         )
     });
 
+    // **File-gated myc-check poison (2026-07-16 remeasure / express gap-close).** Emitting
+    // `impl Trait` for a non-prelude foreign trait produces `unknown trait` CheckErrors that
+    // zero an entire file's `checked_fraction`. DN-122 MVP only seeds Ord3 (+ derive Show/Init);
+    // synthetic trait defs failed (DN-34 §8.8). **Default → Init** remaps (DN-129). **Widen**
+    // with a resolvable width_cast body emits as a free `fn` (no trait wrapper) — keeps the
+    // DN-41 width_cast path without ambient `trait Widen`. Other non-prelude trait-impls gap
+    // wholesale (G2).
+    let (trait_name, trait_targs, mvp_shape, default_to_init, widen_free_fn) =
+        match (trait_name, trait_targs, mvp_shape) {
+            (Some(n), targs, None) if n == "Default" && targs.is_empty() => {
+                (Some("Init".to_string()), targs, None, true, false)
+            }
+            (Some(n), targs, None) if n == "Widen" => {
+                // Free-fn path: still emit width_cast bodies without `impl Widen … for …`.
+                (Some(n), targs, None, false, true)
+            }
+            // Non-prelude foreign traits only (Ord3/Show/Init/Fuse/Fault keep prior emit
+            // paths even when MVP shape doesn't match — e.g. self-receiver Ord3 residual).
+            (Some(n), _targs, None)
+                if !matches!(
+                    n.as_str(),
+                    "Ord3" | "Show" | "Init" | "Fuse" | "Fault" | "Default"
+                ) =>
+            {
+                return Err(GapReason::new(
+                    Category::Impl,
+                    format!(
+                        "trait-impl of non-prelude trait `{n}` — no ambient trait definition \
+                         and synthetic trait emission is refused (DN-34 §8.8 / DN-122 MVP); \
+                         gapped the whole impl so the residual cannot file-poison myc-check \
+                         (G2; express gap-close 2026-07-16)"
+                    ),
+                ));
+            }
+            (n, targs, shape) => (n, targs, shape, false, false),
+        };
+
     let mut sub_gaps = Vec::new();
     let mut method_bodies = Vec::new();
     for ii in &item.items {
@@ -4748,38 +6208,83 @@ pub fn emit_impl(item: &ItemImpl) -> Result<Emitted, GapReason> {
                                             .to_string(),
                                     );
                                 }
-                                // DN-34 §8.13/8.14 "D4": a no-`self` inherent-impl associated fn
-                                // (constructor-shaped) is mangled `Type__method` — see
-                                // `mangled_inherent_fn_name`'s doc for the full rationale (M-664's
-                                // flat-fn desugar + why only the receiver-less case is safe to
-                                // rename). EXPLAIN-traceable: recorded as a doc line on the
-                                // emitted `fn` itself, not just in this module's comments.
-                                let emitted_fn_name = if trait_name.is_none()
-                                    && !has_self_receiver(&f.sig)
-                                {
+                                // DN-34 §8.13/8.14 "D4" + express gap-close (2026-07-16):
+                                // Mycelium lifts inherent-impl methods to flat top-level `fn`s
+                                // (M-664). Collision policy:
+                                //   - no-`self` methods: always mangle (pre-existing D4);
+                                //   - self-receivers: mangle when the bare name was already
+                                //     emitted (fixes multi-type `as_nanos` without renaming the
+                                //     first occurrence).
+                                // Trait-impl methods stay under `impl Trait for T` (or free-fn
+                                // Widen path below).
+                                let raw_method = if default_to_init && f.sig.ident == "default" {
+                                    "init".to_string()
+                                } else {
+                                    f.sig.ident.to_string()
+                                };
+                                let emitted_fn_name = if widen_free_fn {
+                                    // Free function, not nested in impl Trait — mangle with both
+                                    // self and target widths. i8 and u8 both map to Binary{8}, so
+                                    // de-dupe: second identical free-fn is skipped (sub-gapped).
+                                    let targ =
+                                        trait_targs.first().map(|s| s.as_str()).unwrap_or("?");
                                     let mangled = mangled_inherent_fn_name(
-                                        &self_ty_text,
-                                        &f.sig.ident.to_string(),
+                                        &format!("{self_ty_text}_to_{targ}"),
+                                        "widen",
                                     );
+                                    if bare_fn_name_taken(&mangled) {
+                                        sub_gaps.push(GapReason::new(
+                                            Category::Impl,
+                                            format!(
+                                                "Widen free-fn `{mangled}` already emitted for \
+                                                 this Binary width pair (signed+unsigned collapse \
+                                                 to the same Binary{{N}}); de-duplicated, not \
+                                                 double-emitted (G2)"
+                                            ),
+                                        ));
+                                        continue;
+                                    }
                                     doc.push(format!(
+                                        "// Declared: Widen free-fn emit `{mangled}` (no ambient \
+                                         trait Widen — DN-34 §8.8; width_cast body DN-41) so \
+                                         myc-check is not file-poisoned by `unknown trait Widen` \
+                                         (express gap-close 2026-07-16)."
+                                    ));
+                                    record_local_mangled_assoc_fn(&mangled, &sig.params, &sig.ret);
+                                    record_bare_fn_name(&mangled);
+                                    mangled
+                                } else if trait_name.is_none() {
+                                    let bare =
+                                        resolve_surface_ident(&raw_method, "impl method name")?;
+                                    let must_mangle = !has_self_receiver(&f.sig)
+                                        || local_mangled_assoc_fn_known(&bare)
+                                        || bare_fn_name_taken(&bare);
+                                    if must_mangle {
+                                        let mangled =
+                                            mangled_inherent_fn_name(&self_ty_text, &raw_method);
+                                        doc.push(format!(
                                             "// Declared: renamed `impl {} {{ fn {} }}` -> \
                                              `{mangled}` (D4 inherent-impl flat-fn desugar + \
-                                             DN-140 length-prefix mangle, M-664) — Mycelium \
-                                             lifts receiver-less associated fns to top-level names.",
-                                            self_ty_text,
-                                            f.sig.ident,
+                                             DN-140 length-prefix mangle, M-664).",
+                                            self_ty_text, f.sig.ident,
                                         ));
-                                    // DN-133 (M-1094) tier (i): record this real, observed
-                                    // emission so a LATER call site in this same file can
-                                    // resolve `Type::method(...)` against it — see
-                                    // `record_local_mangled_assoc_fn`'s doc.
-                                    record_local_mangled_assoc_fn(&mangled);
-                                    mangled
+                                        record_local_mangled_assoc_fn(
+                                            &mangled,
+                                            &sig.params,
+                                            &sig.ret,
+                                        );
+                                        record_bare_fn_name(&mangled);
+                                        mangled
+                                    } else {
+                                        // Bare un-mangled inherent method — still record param
+                                        // widths under the bare name so same-file calls can
+                                        // rewrite lit args (ORACLE-R1 A5).
+                                        record_local_mangled_assoc_fn(&bare, &sig.params, &sig.ret);
+                                        record_bare_fn_name(&bare);
+                                        bare
+                                    }
                                 } else {
-                                    resolve_surface_ident(
-                                        &f.sig.ident.to_string(),
-                                        "impl method name",
-                                    )?
+                                    resolve_surface_ident(&raw_method, "impl method name")?
                                 };
                                 // Lifted inherent-impl methods are never a cross-nodule `use`
                                 // target in the corpus's own Rust source shape (Rust imports a
@@ -4848,17 +6353,20 @@ pub fn emit_impl(item: &ItemImpl) -> Result<Emitted, GapReason> {
         return Err(GapReason::new(Category::Impl, reason));
     }
 
-    // Each method (and, when present, its own doc-comment lines) indented — same
-    // readability/extraction rationale as `emit_trait`'s `sig_lines` above. `render_fn`'s output
-    // may itself span multiple lines (doc comment + the `fn ...;` line), so indent every line,
-    // not just the first.
+    // Each method (and, when present, its own doc-comment lines) indented inside an `impl`
+    // block — same readability/extraction rationale as `emit_trait`'s `sig_lines`. Free-fn
+    // Widen path skips the indent (top-level `fn`s). `render_fn` may span multiple lines.
     let body_text = method_bodies
         .iter()
         .map(|m| {
-            m.lines()
-                .map(|l| format!("  {l}"))
-                .collect::<Vec<_>>()
-                .join("\n")
+            if widen_free_fn {
+                m.clone()
+            } else {
+                m.lines()
+                    .map(|l| format!("  {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -4867,25 +6375,26 @@ pub fn emit_impl(item: &ItemImpl) -> Result<Emitted, GapReason> {
         myc.push_str(&d);
         myc.push('\n');
     }
-    if mvp_shape.is_some() {
-        // DN-122 §13 (M-1080; WU-A) — EXPLAIN-traceable provenance (G2: never a silent swap): this
-        // impl matched a registered MVP prelude-trait shape, so it needs no `use` (the trait is
-        // ambiently seeded — `crates/mycelium-l1/src/ord3.rs`, mirroring `Fuse`/M-965) and the
-        // Mycelium-side type argument below is SYNTHESIZED from the impl's own `Self`, not read off
-        // the Rust source (which, for this trait shape, never spells one).
+    if mvp_shape.is_some() || default_to_init {
+        // DN-122 §13 (M-1080; WU-A) / DN-129 Default→Init — EXPLAIN-traceable provenance (G2).
         myc.push_str(
-            "// Declared: DN-122 §13 / M-1080 MVP — foreign-trait impl of a prelude-seeded, \
-             single-param, param-only-sig trait; the `[<SelfTy>]` argument below is synthesized \
-             (Rust's own zero-explicit-arg `impl Trait for T` never spells it — Mycelium's stage-1 \
-             trait model has no implicit `Self` slot, RFC-0019 §4.1).\n",
+            "// Declared: prelude-trait remapping — foreign-trait impl of a prelude-seeded \
+             single-param trait (DN-122 Ord3 MVP and/or DN-129 Default→Init); the `[<SelfTy>]` \
+             argument below is synthesized (Rust's zero-explicit-arg `impl Trait for T` never \
+             spells it — Mycelium stage-1 has no implicit Self slot, RFC-0019 §4.1).\n",
         );
     }
-    let name = if let Some(trait_name) = trait_name {
-        let targs_text = if let Some(_shape) = mvp_shape {
-            // The MVP `T`-for-`T` idiom (mirrors `Fuse`): the trait's sole Mycelium parameter IS
-            // the impl's own `Self`, regardless of whether Rust's source carried an explicit
-            // `<...>` (this registry only ever matches the zero-explicit-arg case — see
-            // `mvp_prelude_trait_shape`'s `trait_targs.is_empty()` guard).
+    let name = if widen_free_fn {
+        // Free functions only — body_text lines are already full `fn …;` rows (no impl wrap).
+        myc.push_str(&body_text);
+        format!(
+            "widen_free {} -> {}",
+            self_ty_text,
+            trait_targs.first().map(|s| s.as_str()).unwrap_or("?")
+        )
+    } else if let Some(trait_name) = trait_name {
+        let targs_text = if mvp_shape.is_some() || default_to_init {
+            // The MVP `T`-for-`T` idiom (mirrors `Fuse`/`Init`): sole Mycelium parameter IS Self.
             format!("[{self_ty_text}]")
         } else if trait_targs.is_empty() {
             String::new()

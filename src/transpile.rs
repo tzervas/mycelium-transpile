@@ -138,6 +138,8 @@ pub(crate) fn transpile_source_with_ctx(
     // in-file reference (which would poison the file's `myc check` and cost its clean items).
     let resolvable = resolvable_type_names(&parsed.items);
     let layouts = struct_layouts(&parsed.items, &resolvable);
+    // Parallel type map for lit-zero / signed-order rewrite on field compares (post-#1645 residual).
+    let field_types = struct_field_type_map(&parsed.items, &layouts);
     // M-1084: this file's own `use`-resolution context — its crate-root-relative module segments
     // (`self::`/`super::` resolve relative to this) and, when derivable, its own extern-crate
     // identifier (the cross-phylum same-crate-vs-bare precedence — see `symtab.rs` module docs).
@@ -157,6 +159,7 @@ pub(crate) fn transpile_source_with_ctx(
     crate::emit::with_emit_ctx(
         resolvable,
         layouts,
+        field_types,
         symtab.clone(),
         pub_needed.clone(),
         imported_type_keys,
@@ -225,8 +228,47 @@ pub(crate) fn transpile_source_with_ctx(
                     }
                 }
             }
+            // ORACLE-R1 A2: co-emitted lattice types must land *before* any free-fn that
+            // references them (e.g. strength_of). Drain inside the emit ctx so DN-140 variant
+            // renames share the item-loop's per-file ident-emission map.
+            let lattice = emit::drain_lattice_co_emits();
+            if !lattice.is_empty() {
+                let mut preamble = Vec::with_capacity(lattice.len() + body_chunks.len());
+                let mut lattice_names = Vec::with_capacity(lattice.len());
+                for (name, myc) in lattice {
+                    preamble.push(myc);
+                    lattice_names.push(format!("co-emit:{name}"));
+                }
+                preamble.append(&mut body_chunks);
+                body_chunks = preamble;
+                // Prepend so emitted_items order matches file order (co-emits first).
+                let mut names = lattice_names;
+                names.append(&mut emitted_items);
+                emitted_items = names;
+            }
         },
     );
+
+    // G-α Rank-1 / L2-A: ambient Result/Option type co-emit when the assembled body mentions those
+    // type heads and does not already define them. Pure over body text (no emit-ctx). Must land
+    // *before* lattice co-emits and free-fns so `Result[…]` signatures resolve under myc-check.
+    // Order after render: ambient → (lattice already prepended above) → body items.
+    {
+        let ambient = emit::ambient_result_option_preamble(&body_chunks.join("\n\n"));
+        if !ambient.is_empty() {
+            let mut preamble = Vec::with_capacity(ambient.len() + body_chunks.len());
+            let mut ambient_names = Vec::with_capacity(ambient.len());
+            for (name, myc) in ambient {
+                preamble.push(myc);
+                ambient_names.push(format!("co-emit:{name}"));
+            }
+            preamble.append(&mut body_chunks);
+            body_chunks = preamble;
+            let mut names = ambient_names;
+            names.append(&mut emitted_items);
+            emitted_items = names;
+        }
+    }
 
     let myc_text = render_nodule(nodule_path, &body_chunks, &parsed.attrs);
     let report = GapReport {
@@ -474,6 +516,64 @@ fn struct_layouts(
     out
 }
 
+/// Parallel to [`struct_layouts`]: positional mapped field *types* for every layout key that
+/// still has a name layout after collision refusal. Each entry is `map_type` text, with a
+/// trailing `"!s"` when the Rust field was a signed integer (same internal marker
+/// `sig_type_env` uses — never emitted into `.myc`). Keys missing from `layouts` (collision-
+/// refused names) are omitted so emit never resolves a wrong-type bind for an ambiguous ctor
+/// name (G2 — same refusal discipline as name layouts).
+///
+/// Used by the binary lit-zero rewrite so `self.nanos < 0` recovers `Binary{128}` width +
+/// signedness; the name-only layout cannot drive `binary_width` (post-#1645 residual).
+fn struct_field_type_map(
+    items: &[Item],
+    layouts: &HashMap<String, Vec<Option<String>>>,
+) -> HashMap<String, Vec<Option<String>>> {
+    fn map_field_ty(ty: &syn::Type) -> Option<String> {
+        let mapped = crate::map::map_type(ty, None).ok()?;
+        if crate::emit::type_is_signed_int(ty) {
+            Some(format!("{mapped}!s"))
+        } else {
+            Some(mapped)
+        }
+    }
+
+    fn fields_types(fields: &syn::Fields) -> Vec<Option<String>> {
+        match fields {
+            syn::Fields::Named(fs) => fs.named.iter().map(|f| map_field_ty(&f.ty)).collect(),
+            syn::Fields::Unnamed(fs) => fs.unnamed.iter().map(|f| map_field_ty(&f.ty)).collect(),
+            syn::Fields::Unit => Vec::new(),
+        }
+    }
+
+    let mut out: HashMap<String, Vec<Option<String>>> = HashMap::new();
+    for item in items {
+        match item {
+            Item::Struct(s) => {
+                let key = s.ident.to_string();
+                if !layouts.contains_key(&key) {
+                    continue;
+                }
+                out.insert(key, fields_types(&s.fields));
+            }
+            Item::Enum(e) => {
+                for v in &e.variants {
+                    let key = v.ident.to_string();
+                    if !layouts.contains_key(&key) {
+                        continue;
+                    }
+                    // Only named-field variants are registered in `struct_layouts`.
+                    if matches!(v.fields, syn::Fields::Named(_)) {
+                        out.insert(key, fields_types(&v.fields));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// DN-133 (M-1094) tier (ii): for every locally `use`-imported type NAME in this file, the
 /// ordered cross-nodule symbol-table lookup key(s)
 /// ([`SymbolTable::candidate_lookup_keys`]) that head would resolve through — consumed by
@@ -575,14 +675,9 @@ fn dispatch_item(item: &Item, use_ctx: &UseCtx) -> Outcome {
                 ))
             }
         }
-        Item::Const(c) => Outcome::Gap(GapReason::new(
-            Category::Other,
-            format!(
-                "top-level `const {}` — no const item production in the grammar (`item` covers \
-                 use/default/type/trait/impl/fn/object/lower/derive only)",
-                c.ident
-            ),
-        )),
+        // ORACLE-R1 A4: unsigned integer consts with a decidable value co-emit as zero-arg
+        // BinLit fns (`max_expr_depth` hand-port shape); everything else stays an honest gap.
+        Item::Const(c) => emit::emit_const(c).map_or_else(Outcome::Gap, Outcome::Emitted),
         Item::Static(s) => Outcome::Gap(GapReason::new(
             Category::Other,
             format!(
@@ -655,6 +750,14 @@ fn dispatch_item(item: &Item, use_ctx: &UseCtx) -> Outcome {
 /// misses):** every leaf fails to resolve, so this degenerates to exactly the pre-gap-close-2
 /// behavior — a single flagged gap, nothing emitted (byte-identical for every existing single-file
 /// caller).
+///
+/// **ONESHOT L2-B phase-2 / DN-124 + G-α Rank-2:** a leaf that **does** resolve and has a sibling
+/// baseline **type** def is **co-included** into the consumer (Declared local surface + EXPLAIN
+/// naming the full home nodule path — M-1084 provenance, never short-form collapse) so single-file
+/// oracle can check clean. A resolved leaf with a sibling baseline **free-fn** def is co-included
+/// the same way (G-α Import non-type). A resolved leaf **without** a type/fn extractable surface
+/// still emits full-path `use <nodule>.<Item>;` (B1/#1659; may oracle-false-fail — dual-report).
+/// See `symtab.rs`.
 fn dispatch_use(u: &syn::ItemUse, ctx: &UseCtx) -> Outcome {
     let Some(candidates) = symtab::use_candidates(&u.tree, ctx.module) else {
         // A tree with no module-path segment at all (a bare `use Item;` naming nothing), or a
@@ -672,7 +775,12 @@ fn dispatch_use(u: &syn::ItemUse, ctx: &UseCtx) -> Outcome {
         ));
     };
 
-    let mut emitted_lines = Vec::new();
+    let mut use_lines = Vec::new();
+    // (module_key, name) — module-keyed so two crates both exporting `Foo` do not first-wins collide.
+    let mut co_include_seeds: Vec<(String, String)> = Vec::new();
+    let mut co_include_homes: Vec<String> = Vec::new();
+    let mut fn_co_include_seeds: Vec<(String, String)> = Vec::new();
+    let mut fn_co_include_homes: Vec<String> = Vec::new();
     let mut resolved_names = Vec::new();
     let mut leaf_gaps = Vec::new();
     for c in &candidates {
@@ -684,9 +792,76 @@ fn dispatch_use(u: &syn::ItemUse, ctx: &UseCtx) -> Outcome {
                     emit::cross_nodule_resolve(k, name).map(|nodule_path| (k, nodule_path))
                 });
                 match hit {
-                    Some((_, nodule_path)) => {
-                        emitted_lines.push(format!("use {nodule_path}.{name};"));
-                        resolved_names.push(name.clone());
+                    Some((key, nodule_path)) => {
+                        // Already local to this file — skip re-import / re-co-include (G2: no
+                        // duplicate type poison).
+                        if emit::name_already_available(name) {
+                            resolved_names.push(name.clone());
+                            continue;
+                        }
+                        if emit::cross_nodule_has_type_def(key, name) {
+                            // L2-B: co-include type surface (oracle self-containment).
+                            if !co_include_seeds.iter().any(|(k, n)| k == key && n == name) {
+                                co_include_seeds.push(((*key).clone(), name.clone()));
+                            }
+                            if !co_include_homes.iter().any(|h| h == &nodule_path) {
+                                co_include_homes.push(nodule_path.clone());
+                            }
+                            resolved_names.push(name.clone());
+                            emit::record_imported_name(name);
+                        } else if emit::cross_nodule_has_fn_def(key, name) {
+                            // G-α L2-B non-type: co-include free-fn surface + any batch type
+                            // names the fn line references (so oracle sees Source/IoError/…).
+                            if !fn_co_include_seeds
+                                .iter()
+                                .any(|(k, n)| k == key && n == name)
+                            {
+                                fn_co_include_seeds.push(((*key).clone(), name.clone()));
+                            }
+                            if !fn_co_include_homes.iter().any(|h| h == &nodule_path) {
+                                fn_co_include_homes.push(nodule_path.clone());
+                            }
+                            if let Some(fn_line) = emit::cross_nodule_fn_def(key, name) {
+                                for ty in symtab::upper_camel_names_in_line(&fn_line, name) {
+                                    if emit::cross_nodule_has_type_def(key, &ty)
+                                        && !emit::name_already_available(&ty)
+                                        && !co_include_seeds
+                                            .iter()
+                                            .any(|(k, n)| k == key && n == &ty)
+                                    {
+                                        co_include_seeds.push(((*key).clone(), ty));
+                                    }
+                                }
+                            }
+                            if !fn_co_include_homes.is_empty() {
+                                for h in &fn_co_include_homes {
+                                    if !co_include_homes.iter().any(|x| x == h) {
+                                        co_include_homes.push(h.clone());
+                                    }
+                                }
+                            }
+                            resolved_names.push(name.clone());
+                            emit::record_imported_name(name);
+                        } else {
+                            // Residual non-type surface without extractable single-line fn
+                            // (const / multi-line / other): full-path use (B1 form) + EXPLAIN.
+                            let prefix =
+                                SymbolTable::use_emit_qualifier(ctx.crate_ident, &nodule_path, key);
+                            if use_lines.is_empty() {
+                                use_lines.push(
+                                    "// EXPLAIN (DN-124): batch-resolved cross-nodule `use` of a \
+                                     non-type item with no extractable single-line free-fn surface \
+                                     — phylum mode sees the sibling export; single-file oracle \
+                                     (phylum-of-one) may refuse until multi-nodule co-check. Types \
+                                     and free-fns with extractable surface co-include instead \
+                                     (L2-B / G-α Rank-2). Not a silent skip (G2/VR-5)."
+                                        .to_string(),
+                                );
+                            }
+                            use_lines.push(format!("use {prefix}.{name};"));
+                            resolved_names.push(name.clone());
+                            emit::record_imported_name(name);
+                        }
                     }
                     None => leaf_gaps.push(GapReason::new(
                         Category::Import,
@@ -736,10 +911,112 @@ fn dispatch_use(u: &syn::ItemUse, ctx: &UseCtx) -> Outcome {
         }
     }
 
+    // Materialize co-includes: types (transitive) first, then free-fns, then residual use lines.
+    let mut emitted_lines: Vec<String> = Vec::new();
+    if !co_include_seeds.is_empty() {
+        let closure = emit::cross_nodule_type_def_closure(&co_include_seeds);
+        if !closure.is_empty() {
+            let homes = if co_include_homes.is_empty() {
+                "(batch sibling)".to_string()
+            } else {
+                co_include_homes.join(", ")
+            };
+            emitted_lines.push(format!(
+                "// EXPLAIN (L2-B/DN-124): Declared co-include of batch-sibling type surface \
+                 (homes: {homes}) so single-file oracle is self-contained — not a language \
+                 `use` identity, not a short-form path collapse (M-1084 full path retained as \
+                 provenance). Transitive type deps in the same batch are co-included. G2/VR-5."
+            ));
+            for (_home, def_line) in &closure {
+                // Strip a leading `pub ` so co-includes stay file-private (consumer is not
+                // re-exporting the sibling's pub surface).
+                let local = def_line.strip_prefix("pub ").unwrap_or(def_line.as_str());
+                // Record each co-included type name so a later use item does not re-emit.
+                if let Some(n) = local
+                    .strip_prefix("type ")
+                    .and_then(|r| r.split('=').next())
+                    .map(str::trim)
+                {
+                    if !emit::name_already_available(n) {
+                        emit::record_imported_name(n);
+                    }
+                }
+                emitted_lines.push(local.to_string());
+            }
+        } else {
+            // Seeds claimed a type_def at resolve time but closure is empty — never silent:
+            // fall back to full-path use for those seeds (FLAG residual path).
+            for (_key, name) in &co_include_seeds {
+                leaf_gaps.push(GapReason::new(
+                    Category::Import,
+                    format!(
+                        "`{name}` resolved as a type seed but no type_def_closure entry was \
+                         produced — internal residual; flagged, not guessed (VR-5/G2)"
+                    ),
+                ));
+            }
+        }
+    }
+    if !fn_co_include_seeds.is_empty() {
+        let fn_lines = emit::cross_nodule_fn_def_lines(&fn_co_include_seeds);
+        if !fn_lines.is_empty() {
+            let homes = if fn_co_include_homes.is_empty() {
+                "(batch sibling)".to_string()
+            } else {
+                fn_co_include_homes.join(", ")
+            };
+            emitted_lines.push(format!(
+                "// EXPLAIN (G-α L2-B/DN-124): Declared co-include of batch-sibling free-fn \
+                 surface (homes: {homes}) so single-file oracle is self-contained — not a \
+                 language `use` identity, not a short-form path collapse (M-1084 full path \
+                 retained as provenance). Type deps on the fn line are co-included above when \
+                 present in-batch. Body free-fn/method callees may still residual-poison oracle \
+                 (FLAG, not silent). G2/VR-5."
+            ));
+            for (_home, def_line) in &fn_lines {
+                let local = def_line.strip_prefix("pub ").unwrap_or(def_line.as_str());
+                if let Some(n) = local
+                    .strip_prefix("fn ")
+                    .and_then(|r| r.find(['(', '[']).map(|i| r[..i].trim()))
+                {
+                    if !emit::name_already_available(n) {
+                        emit::record_imported_name(n);
+                    }
+                }
+                emitted_lines.push(local.to_string());
+            }
+        } else {
+            for (_key, name) in &fn_co_include_seeds {
+                leaf_gaps.push(GapReason::new(
+                    Category::Import,
+                    format!(
+                        "`{name}` resolved as a free-fn seed but no fn_def line was produced — \
+                         internal residual; flagged, not guessed (VR-5/G2)"
+                    ),
+                ));
+            }
+        }
+    }
+    let had_use_emit = use_lines.iter().any(|l| l.starts_with("use "));
+    emitted_lines.extend(use_lines);
+
     if emitted_lines.is_empty() {
         // Nothing resolved: fold every leaf's precise reason into one gap covering the whole item
         // (mirrors the self/super-headed early-return above — a wholly-unresolved `use` is still a
         // single, never-silent gap, not a vacuous "emission" of zero lines).
+        // Exception: every leaf was already-available (resolved_names non-empty, zero lines) —
+        // treat as a no-op emission so the item is not a false Import gap.
+        if !resolved_names.is_empty() {
+            return Outcome::Emitted(Emitted {
+                name: format!("use:{}", resolved_names.join(",")),
+                myc: format!(
+                    "// EXPLAIN (L2-B): resolved import(s) {} already available in this file — \
+                     no re-emit (G2).",
+                    resolved_names.join(", ")
+                ),
+                sub_gaps: leaf_gaps,
+            });
+        }
         let joined = leaf_gaps
             .into_iter()
             .map(|g| g.reason)
@@ -747,8 +1024,16 @@ fn dispatch_use(u: &syn::ItemUse, ctx: &UseCtx) -> Outcome {
             .join("; ");
         Outcome::Gap(GapReason::new(Category::Import, joined))
     } else {
+        let had_co = !co_include_seeds.is_empty() || !fn_co_include_seeds.is_empty();
+        let item_name = if !had_co {
+            format!("use:{}", resolved_names.join(","))
+        } else if had_use_emit {
+            format!("co-include+use:{}", resolved_names.join(","))
+        } else {
+            format!("co-include:{}", resolved_names.join(","))
+        };
         Outcome::Emitted(Emitted {
-            name: format!("use:{}", resolved_names.join(",")),
+            name: item_name,
             myc: emitted_lines.join("\n"),
             sub_gaps: leaf_gaps,
         })

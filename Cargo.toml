@@ -29,7 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 # RFC-0041 §4.7 (W1): the shared never-silent recursion-budget leaf — closes the guard hole in
 # `emit_expr`/`map_type`/`map_pattern`'s mutual/self recursion over the `syn` AST (RR-29).
-mycelium-workstack = { git = "https://github.com/tzervas/mycelium-core", rev = "781d3fcceba82acfe6b0eb46650513bd78a2416b" }
+mycelium-workstack = { git = "https://github.com/tzervas/mycelium-core", rev = "46d2515cbd86d2ae4d1365f4adcd2796737e9f0b" }
 
 [dev-dependencies]
 proptest = "1"
@@ -37,7 +37,7 @@ proptest = "1"
 # of `mycelium-l1`'s lexer keyword table; `src/tests/reserved.rs` asserts every snapshot word is
 # still rejected by the real `mycelium_l1::token::keyword`, so a snapshot that drifts to a
 # non-reserved word (the regressing over-gap direction) is caught. Dev-only — not a runtime dep.
-mycelium-l1 = { git = "https://github.com/tzervas/mycelium-l1", rev = "cd32a1ed7ab7d2be38c9c3047da7318d182b7a1c" }
+mycelium-l1 = { git = "https://github.com/tzervas/mycelium-l1", rev = "2b92f54349eb0d4f67e32e983874df76908b9ab6" }
 
 # --- standalone workspace root (course-correction Phase B, 2026-07-18; steer handoff §6.2) ---
 [workspace]

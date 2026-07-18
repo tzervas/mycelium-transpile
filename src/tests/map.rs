@@ -317,3 +317,63 @@ fn mutable_reference_is_gapped_not_erased() {
         err.reason
     );
 }
+
+// ---- L2-C / std-io Source·Sink residual: Vec is conditional prelude, not an M-1006 user dep ----
+
+/// `Vec[A]` is myc-check's **conditional prelude** type (DN-138 WU-4): seeded when a nodule
+/// mentions it, never requiring an in-file `type Vec` declaration. `field_type_user_deps` must
+/// therefore **not** push `Vec` as a user dep — only its type arguments. Counting `Vec` as a dep
+/// false-gaps every named-field struct whose fields are only `Vec<_>` / nested shapes of that form
+/// under the M-1006 resolvability gate (std-io `Substrate`/`Source`/`Sink`).
+#[test]
+fn field_type_user_deps_vec_is_not_an_in_file_user_dep() {
+    use crate::map::field_type_user_deps;
+
+    // Plain `Vec<u8>` — mappable, zero user deps (u8 is a builtin; Vec is conditional prelude).
+    let mut out = Vec::new();
+    assert!(
+        field_type_user_deps(&ty("Vec<u8>"), &mut out),
+        "`Vec<u8>` is mappable (to `Vec[Binary{{8}}]`)"
+    );
+    assert!(
+        out.is_empty(),
+        "Vec must not be an M-1006 user dep (conditional prelude); got {out:?}"
+    );
+
+    // Nested user type inside Vec still contributes that user dep.
+    let mut out = Vec::new();
+    assert!(
+        field_type_user_deps(&ty("Vec<Ordering>"), &mut out),
+        "`Vec<Ordering>` is mappable"
+    );
+    assert_eq!(
+        out,
+        vec!["Ordering".to_string()],
+        "only the type argument contributes a user dep, never the Vec head"
+    );
+
+    // Non-prelude generic heads still count as user deps (external `ContentRef[H]` poison case).
+    let mut out = Vec::new();
+    assert!(
+        field_type_user_deps(&ty("ContentRef<ContentHash>"), &mut out),
+        "`ContentRef<ContentHash>` is mappable as a passthrough generic app"
+    );
+    assert_eq!(
+        out,
+        vec!["ContentRef".to_string(), "ContentHash".to_string()],
+        "non-prelude heads remain user deps so M-1006 still withholds out-of-file records"
+    );
+
+    // Reserved-word bare type (`Substrate`) is mappable via DN-140 rewrite and counts as a
+    // source-spelling user dep (so in-file `struct Substrate` can satisfy Source's field).
+    let mut out = Vec::new();
+    assert!(
+        field_type_user_deps(&ty("Substrate"), &mut out),
+        "reserved bare `Substrate` is mappable (map_type → Substrate_kw), not unmappable"
+    );
+    assert_eq!(
+        out,
+        vec!["Substrate".to_string()],
+        "reserved bare names contribute the Rust source spelling as a user dep"
+    );
+}

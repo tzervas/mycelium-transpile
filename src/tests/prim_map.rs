@@ -51,23 +51,34 @@ fn wired_float_classification_methods_emit_bridged_prim_calls() {
 /// NOT gated: an `.is_nan()`-named method on a receiver whose type is NOT known to be `Float`
 /// (here, an ordinary passed-through named type) must NOT trigger the bridged prim rewrite — the
 /// receiver-type gate exists precisely to prevent a coincidentally-same-named method on an
-/// unrelated type from being mistranslated (VR-5: never guess the receiver's type). Falls through
-/// to the unchanged generic `recv.method(args)` -> `method(recv, args)` desugar.
+/// unrelated type from being mistranslated (VR-5: never guess the receiver's type).
+///
+/// **G-β Rank A:** the previous "fall through to bare `is_nan(x)`" desugar fabricated an
+/// unknown prim (file-poison). Unregistered method calls now **gap** rather than emit a bare
+/// free-fn name (G2/VR-5).
 #[test]
-fn is_nan_on_unknown_receiver_type_keeps_generic_desugar() {
+fn is_nan_on_unknown_receiver_type_gaps_never_fabricates() {
     let rust = "fn f(x: Thing) -> bool { x.is_nan() }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        report.emitted_items.iter().any(|n| n == "f"),
-        "expected `f` in emitted_items, got {:?} (gaps={:?})",
-        report.emitted_items,
-        report.gaps
+        !report.emitted_items.iter().any(|n| n == "f"),
+        "expected `f` to gap (no proven-emitted `is_nan` free-fn referent), got \
+         emitted_items={:?} myc:\n{myc}",
+        report.emitted_items
     );
     assert!(
-        myc.contains("is_nan(x)") && !myc.contains("flt_is_nan"),
-        "expected the OLD generic bare-call desugar (`is_nan(x)`), not the bridged `flt_is_nan` \
-         rewrite, since `Thing` is not a known `Float` receiver — got:\n{myc}"
+        !myc.contains("is_nan(") && !myc.contains("flt_is_nan"),
+        "must never emit bare `is_nan(` (fabricate) nor bridged `flt_is_nan` on unknown \
+         receiver — got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")),
+        "expected G-β Rank A gap reason, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
 
@@ -114,22 +125,31 @@ fn wrapping_methods_on_known_binary_are_pending_backend_gaps() {
 /// NOT gated: `.wrapping_add()` on a receiver NOT known to be a concrete `Binary{N}` (here, an
 /// unrelated passed-through type) does not fire the PENDING-BACKEND gap either — same
 /// receiver-type-gate discipline as the `is_nan` case above, applied to the `AnyBinaryWidth` gate.
+///
+/// **G-β Rank A:** bare `wrapping_add(x, y)` free-fn desugar is no longer emitted for an
+/// unregistered method — gaps instead of fabricating an unknown prim (G2/VR-5).
 #[test]
-fn wrapping_add_on_unknown_receiver_type_keeps_generic_desugar() {
+fn wrapping_add_on_unknown_receiver_type_gaps_never_fabricates() {
     let rust = "fn f(x: Thing, y: Thing) -> Thing { x.wrapping_add(y) }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        report.emitted_items.iter().any(|n| n == "f"),
-        "expected `f` in emitted_items (the generic desugar still emits SOME text), got {:?} \
-         (gaps={:?})",
-        report.emitted_items,
-        report.gaps
+        !report.emitted_items.iter().any(|n| n == "f"),
+        "expected `f` to gap (no proven-emitted `wrapping_add` free-fn referent), got \
+         emitted_items={:?} myc:\n{myc}",
+        report.emitted_items
     );
     assert!(
-        myc.contains("wrapping_add(x, y)"),
-        "expected the OLD generic bare-call desugar (`wrapping_add(x, y)`), not a PENDING-BACKEND \
-         gap, since `Thing` is not a known `Binary{{N}}` receiver — got:\n{myc}"
+        !myc.contains("wrapping_add("),
+        "must never emit bare `wrapping_add(` (fabricate) for an unregistered method — got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")),
+        "expected G-β Rank A gap reason, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
 
@@ -289,29 +309,143 @@ fn clone_on_unresolved_receiver_type_still_gaps_never_fabricates() {
     );
 }
 
-/// NEVER-SILENT (G2/VR-5) regression guard: `to_string`/`into`/`deref` are DELIBERATELY WITHHELD
-/// from `TABLE` (L4, DN-136 Phase-2, M-1100 — see the module doc's L4 section for each one's own
-/// verify-first finding), so the pre-existing `is_unmappable_conversion_method` gap in `emit.rs`
-/// keeps handling them exactly as before — unchanged. Pins that decision directly against the
-/// table (not a guess about emitted text), so a future accidental/silent addition of one of these
-/// rows is caught here first. `to_owned` was withheld by the original L4 leaf (a flagged residual)
-/// but is added by this follow-on leaf — see the converse check below.
+/// M-1037 residual table shape: `to_string` is Bytes-gated identity; `into`/`to_vec` stay
+/// deliberately withheld (expected-type / Seq-copy undecidable — honest gap, never fabricate).
 #[test]
-fn to_string_into_deref_are_not_in_the_table_deliberately_withheld() {
-    for method in ["to_string", "into", "deref"] {
-        assert!(
-            crate::prim_map::lookup(method).is_none(),
-            "`{method}` must NOT be in prim_map::TABLE (deliberately withheld — see the module \
-             doc's L4 section for its verify-first finding); the existing \
-             `is_unmappable_conversion_method` gap in `emit.rs` must keep handling it unchanged"
-        );
-    }
-    // `clone`/`to_owned` ARE in the table — the converse check, so this test cannot pass by
-    // accident (e.g. an empty table).
-    for method in ["clone", "to_owned"] {
+fn m1037_residual_table_shape_to_string_in_into_withheld() {
+    assert!(
+        crate::prim_map::lookup("into").is_none(),
+        "`into` must NOT be in prim_map::TABLE (expected-type undecidable — see module doc)"
+    );
+    assert!(
+        crate::prim_map::lookup("to_vec").is_none(),
+        "`to_vec` must NOT be in prim_map::TABLE (not identity — Seq copy)"
+    );
+    let ts = crate::prim_map::lookup("to_string")
+        .expect("`to_string` must be in TABLE (Bytes identity)");
+    assert!(ts.wired, "`to_string` must be wired: true");
+    assert_eq!(ts.myc_prim, "", "identity sentinel");
+    assert_eq!(
+        ts.receiver_gate,
+        crate::prim_map::ReceiverGate::Exact("Bytes"),
+        "`to_string` must be Exact(Bytes) only — Binary/Bool need Show/render"
+    );
+    for method in [
+        "clone",
+        "to_owned",
+        "as_ref",
+        "borrow",
+        "as_str",
+        "as_slice",
+        "deref",
+        "to_string",
+    ] {
         assert!(
             crate::prim_map::lookup(method).is_some(),
-            "`{method}` must be in prim_map::TABLE (an identity-conversion addition)"
+            "`{method}` must be in prim_map::TABLE (identity-conversion row)"
+        );
+    }
+}
+
+/// M-1037 residual — `.to_string()` on a `Bytes` receiver (str/String / string literal) is
+/// identity; on Binary/Bool it must gap with the Show/render EXPLAIN, never fabricate.
+#[test]
+fn m1037_to_string_bytes_identity_and_non_bytes_gaps() {
+    let identity_cases = [
+        ("fn f(s: &str) -> String { s.to_string() }", "(s)"),
+        ("fn f(s: String) -> String { s.to_string() }", "(s)"),
+        ("fn f() -> String { \"hi\".to_string() }", "\"hi\""),
+    ];
+    for (rust, needle) in identity_cases {
+        let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+            .unwrap_or_else(|e| panic!("failed `{rust}`: {e}"));
+        assert!(
+            report.emitted_items.iter().any(|n| n == "f"),
+            "`{rust}` should emit identity, got emitted={:?} gaps={:?}",
+            report.emitted_items,
+            report.gaps
+        );
+        assert!(
+            myc.contains(needle) && !myc.contains("to_string("),
+            "`{rust}` expected identity containing `{needle}`, no fabricated to_string(, got:\n{myc}"
+        );
+    }
+    // Non-Bytes: Display formatting — must gap, never `to_string(` or bare `render(`.
+    for rust in [
+        "fn f(x: u64) -> String { x.to_string() }",
+        "fn f(x: bool) -> String { x.to_string() }",
+    ] {
+        let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+            .unwrap_or_else(|e| panic!("failed `{rust}`: {e}"));
+        assert!(
+            !report.emitted_items.iter().any(|n| n == "f"),
+            "`{rust}` must gap (non-Bytes to_string), got emitted={:?}",
+            report.emitted_items
+        );
+        assert!(
+            !myc.contains("to_string(") && !myc.contains("render("),
+            "`{rust}` must not fabricate to_string/render, got:\n{myc}"
+        );
+        assert!(
+            report
+                .gaps
+                .iter()
+                .any(|g| g.reason.contains("Show/render") || g.reason.contains("to_string")),
+            "`{rust}` expected Show/render or to_string EXPLAIN gap, got {:?}",
+            report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// M-1037 residual — `into`/`to_vec` always gap with method-specific EXPLAIN; never fabricate.
+#[test]
+fn m1037_into_and_to_vec_never_fabricate() {
+    for (rust, needle, forbidden) in [
+        (
+            "fn f(s: &str) -> String { s.into() }",
+            "expected-type",
+            "into(",
+        ),
+        ("fn f(x: u64) -> u64 { x.into() }", "expected-type", "into("),
+        (
+            "fn f(x: &[u8]) -> Vec<u8> { x.to_vec() }",
+            "to_vec",
+            "to_vec(",
+        ),
+    ] {
+        let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+            .unwrap_or_else(|e| panic!("failed `{rust}`: {e}"));
+        assert!(
+            !myc.contains(forbidden),
+            "`{rust}` leaked fabricated `{forbidden}`, got:\n{myc}"
+        );
+        assert!(
+            report.gaps.iter().any(|g| g.reason.contains(needle)),
+            "`{rust}` expected gap reason containing `{needle}`, got {:?}",
+            report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// M-1037 — builtin-scalar accessor methods emit identity passthrough, never fabricated bare calls.
+#[test]
+fn m1037_accessor_identity_rows() {
+    let cases = [
+        ("fn f(x: u64) -> u64 { x.as_ref() }", "as_ref"),
+        ("fn f(x: String) -> &str { x.as_str() }", "as_str"),
+        ("fn f(s: &str) -> &str { s.deref() }", "deref"),
+    ];
+    for (rust, fabricated) in cases {
+        let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+            .unwrap_or_else(|e| panic!("failed `{rust}`: {e}"));
+        assert!(
+            report.emitted_items.iter().any(|n| n == "f"),
+            "`{rust}` should emit `f`, got {:?}",
+            report.emitted_items
+        );
+        assert!(
+            !myc.contains(&format!("{fabricated}(")),
+            "`{rust}` must not fabricate `{fabricated}(...)`, got:\n{myc}"
         );
     }
 }
@@ -331,6 +465,9 @@ fn to_owned_on_known_builtin_receiver_emits_identity_passthrough() {
         ("fn f(x: bool) -> bool { x.to_owned() }", "(x)"),
         ("fn f(x: String) -> String { x.to_owned() }", "(x)"),
         ("fn f(s: &str) -> String { s.to_owned() }", "(s)"),
+        // M-1037 residual: string/bool literals are typed in expr_env_type.
+        ("fn f() -> String { \"hi\".to_owned() }", "\"hi\""),
+        ("fn f() -> bool { true.to_owned() }", "True"),
     ];
     for (rust, needle) in cases {
         let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")

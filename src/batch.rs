@@ -261,12 +261,18 @@ pub struct FileResult {
 /// for cross-phylum resolution — every file's own crate identity is derived from ITS OWN real repo
 /// path (`transpile::derive_crate_ident`), so files from different crates never collide on a bare
 /// (unqualified) key.
+///
+/// **ONESHOT L2-B phase-2 + G-α Rank-2:** baseline `.myc` type and free-fn lines are indexed into
+/// the symbol table ([`symtab::extract_type_defs`] / [`symtab::extract_fn_defs`]) so the final pass
+/// can **co-include** sibling type/fn surface into consumers (oracle self-containment) instead of
+/// only emitting phylum-of-one-refusing `use`s. See `symtab.rs` module docs +
+/// `transpile::dispatch_use`.
 pub fn transpile_batch(files: &[PathBuf]) -> (Vec<FileResult>, Vec<(PathBuf, String)>) {
-    let mut pass1: Vec<(PathBuf, GapReport)> = Vec::with_capacity(files.len());
+    let mut pass1: Vec<(PathBuf, String, GapReport)> = Vec::with_capacity(files.len());
     let mut failures = Vec::new();
     for path in files {
         match transpile_file(path) {
-            Ok((_myc, report)) => pass1.push((path.clone(), report)),
+            Ok((myc, report)) => pass1.push((path.clone(), myc, report)),
             Err(e) => failures.push((path.clone(), e)),
         }
     }
@@ -278,7 +284,7 @@ pub fn transpile_batch(files: &[PathBuf]) -> (Vec<FileResult>, Vec<(PathBuf, Str
     let pub_needed = scan_pub_needed(&pass1, &symtab);
 
     let mut results = Vec::with_capacity(pass1.len());
-    for (path, _baseline_report) in &pass1 {
+    for (path, _baseline_myc, _baseline_report) in &pass1 {
         // Keyed by this file's own derived nodule path (stable, lookup-perspective-independent —
         // see the driver doc above), NOT the Rust-side module key a consumer used to reach it.
         let nodule_path = derive_nodule_path(path);
@@ -298,25 +304,25 @@ pub fn transpile_batch(files: &[PathBuf]) -> (Vec<FileResult>, Vec<(PathBuf, Str
 }
 
 /// Build the batch-wide cross-nodule [`SymbolTable`] from every file's baseline-pass
-/// [`GapReport`] (see [`transpile_batch`] step 2). Each file is inserted under exactly ONE key: its
-/// own crate-qualified key (`SymbolTable::qualify_key`) when a real crate identity is derivable from
-/// its path (`transpile::derive_crate_ident` — every genuine repo path under a crate's `src/`), else
-/// the bare intra-crate module key unchanged from pre-M-1084 behavior (a `src`-ancestor-less path,
-/// e.g. this crate's own temp-dir test fixtures — never spuriously qualified). Because every file in
-/// a real single-crate batch shares the identical crate identity, this is byte-identical to the
-/// pre-M-1084 table for that (today's only real) case; a multi-crate batch instead gets one
-/// non-colliding key per file (M-1084's cross-phylum extension — see `symtab.rs` module docs).
-fn build_symbol_table(pass1: &[(PathBuf, GapReport)]) -> SymbolTable {
+/// [`.myc` + `GapReport`] (see [`transpile_batch`] step 2). Each file is inserted under exactly ONE
+/// key: its own crate-qualified key (`SymbolTable::qualify_key`) when a real crate identity is
+/// derivable from its path (`transpile::derive_crate_ident` — every genuine repo path under a
+/// crate's `src/`), else the bare intra-crate module key unchanged from pre-M-1084 behavior (a
+/// `src`-ancestor-less path, e.g. this crate's own temp-dir test fixtures — never spuriously
+/// qualified). Type + free-fn defs for L2-B co-include are extracted from the baseline `.myc` text.
+fn build_symbol_table(pass1: &[(PathBuf, String, GapReport)]) -> SymbolTable {
     let mut table = SymbolTable::new();
-    for (path, report) in pass1 {
+    for (path, myc, report) in pass1 {
         let module_key = SymbolTable::module_key(&derive_module_segments(path));
         let nodule_path = derive_nodule_path(path);
         let emitted: HashSet<String> = report.emitted_items.iter().cloned().collect();
+        let type_defs = symtab::extract_type_defs(myc);
+        let fn_defs = symtab::extract_fn_defs(myc);
         let key = match derive_crate_ident(path) {
             Some(crate_ident) => SymbolTable::qualify_key(&crate_ident, &module_key),
             None => module_key,
         };
-        table.insert(key, nodule_path, emitted);
+        table.insert(key, nodule_path, emitted, type_defs, fn_defs);
     }
     table
 }
@@ -332,11 +338,11 @@ fn build_symbol_table(pass1: &[(PathBuf, GapReport)]) -> SymbolTable {
 /// since a missed pub-propagation opportunity degrades to the pre-lever "stays gapped" behavior, not
 /// to an incorrect emission (VR-5: conservative on failure, never a guess).
 fn scan_pub_needed(
-    pass1: &[(PathBuf, GapReport)],
+    pass1: &[(PathBuf, String, GapReport)],
     symtab: &SymbolTable,
 ) -> BTreeMap<String, HashSet<String>> {
     let mut needed: BTreeMap<String, HashSet<String>> = BTreeMap::new();
-    for (path, _report) in pass1 {
+    for (path, _myc, _report) in pass1 {
         let Ok(source) = fs::read_to_string(path) else {
             continue;
         };

@@ -438,16 +438,16 @@ fn result_unit_return_type_transpiles_and_checks_clean_against_real_toolchain() 
         "expected the mapped signature to carry `Result[Unit, Binary{{8}}]`, got:\n{myc}"
     );
 
-    // A standalone nodule needs `Result` declared locally so `myc check` can resolve `Ok`/`Err`
-    // with no cross-nodule import (mirrors `tests/combinator.rs`'s live-oracle fixture pattern).
-    let full = myc.replacen(
-        &format!("nodule {NODULE_PATH};\n\n"),
-        &format!("nodule {NODULE_PATH};\n\ntype Result[A, E] = Ok(A) | Err(E);\n\n"),
-        1,
+    // G-α Rank-1 ambient co-emit supplies `type Result[A, E] = Ok(A) | Err(E);` when the body
+    // mentions `Result[…]` — no manual inject (would double-define under myc-check).
+    assert!(
+        myc.contains("type Result[A, E] = Ok(A) | Err(E);"),
+        "expected ambient Result co-emit for Result[Unit, …] signature, got:\n{myc}"
     );
-    assert_ne!(
-        full, myc,
-        "expected the nodule-header insertion point to be found, got:\n{myc}"
+    assert!(
+        report.emitted_items.iter().any(|n| n == "co-emit:Result"),
+        "expected co-emit:Result in emitted_items; got {:?}",
+        report.emitted_items
     );
 
     let dir = std::env::temp_dir().join(format!(
@@ -460,13 +460,13 @@ fn result_unit_return_type_transpiles_and_checks_clean_against_real_toolchain() 
     ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join("result_unit.myc");
-    std::fs::write(&path, &full).expect("write result_unit.myc");
+    std::fs::write(&path, &myc).expect("write result_unit.myc");
     let rec = checker.vet_file(&path, "fixture.rs", 1, 1);
     assert_eq!(
         rec.class,
         crate::vet::VetClass::Clean,
         "a real `-> Result<(), u8>` transpile must check CLEAN with the Unit mapping; \
-         diagnostic={:?}\nmyc:\n{full}",
+         diagnostic={:?}\nmyc:\n{myc}",
         rec.diagnostic
     );
 

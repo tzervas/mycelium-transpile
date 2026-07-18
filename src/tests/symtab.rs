@@ -6,7 +6,10 @@
 //! property, cross-phylum multi-crate batches — lives in `src/tests/batch.rs`, alongside the rest of
 //! the batch-mode test corpus.
 
-use crate::symtab::{use_candidates, CandidateKind, HeadKind, SymbolTable, UseCandidate};
+use crate::symtab::{
+    extract_fn_defs, extract_type_defs, use_candidates, CandidateKind, HeadKind, SymbolTable,
+    UseCandidate,
+};
 
 fn candidates_of(src: &str, current_module: &[String]) -> Option<Vec<UseCandidate>> {
     let item: syn::ItemUse = syn::parse_str(src).unwrap_or_else(|e| panic!("{src}: {e}"));
@@ -237,6 +240,8 @@ fn symbol_table_resolve_requires_both_module_and_emitted_name() {
         ["Width".to_string(), "CheckError".to_string()]
             .into_iter()
             .collect(),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     );
 
     assert_eq!(table.resolve("checkty", "Width"), Some("l1.checkty"));
@@ -384,6 +389,8 @@ fn resolve_prefers_same_crate_over_cross_phylum_on_ambiguity_in_root_file() {
         "mycelium_a.sibling".to_string(),
         "a.sibling".to_string(),
         ["Thing".to_string()].into_iter().collect(),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     );
     // A DIFFERENT phylum, coincidentally also named `sibling` (crate identifier), exporting the
     // SAME item name at its crate root.
@@ -391,6 +398,8 @@ fn resolve_prefers_same_crate_over_cross_phylum_on_ambiguity_in_root_file() {
         "sibling".to_string(),
         "b.sibling".to_string(),
         ["Thing".to_string()].into_iter().collect(),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     );
 
     let candidate = UseCandidate {
@@ -419,11 +428,15 @@ fn resolve_goes_cross_phylum_only_from_non_root_file_even_with_a_same_crate_subm
         "mycelium_a.sibling".to_string(),
         "a.sibling".to_string(),
         ["Thing".to_string()].into_iter().collect(),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     );
     table.insert(
         "sibling".to_string(),
         "b.sibling".to_string(),
         ["Thing".to_string()].into_iter().collect(),
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     );
 
     let candidate = UseCandidate {
@@ -445,4 +458,207 @@ fn resolve_goes_cross_phylum_only_from_non_root_file_even_with_a_same_crate_subm
         "from a non-root file, the genuine sibling phylum resolves -- the same-crate submodule \
          is never consulted, so it cannot wrongly shadow it"
     );
+}
+
+// ── M-1084 net-close: `use_emit_qualifier` always keeps full nodule path ────────────────────────
+// Kernel `resolve_imports` keys exports as full `nodule.path` + `.` + item (e.g. `l1.checkty.Width`).
+// Live `myc check --phylum` accepts full paths and refuses crate-root-stripped short forms
+// (`use checkty.Width` → no such name). Identity emit is the net-close; never strip (VR-5).
+
+#[test]
+fn use_emit_qualifier_keeps_full_nodule_for_same_crate_sibling() {
+    assert_eq!(
+        SymbolTable::use_emit_qualifier(Some("mycelium_l1"), "l1.checkty", "mycelium_l1.checkty"),
+        "l1.checkty"
+    );
+    assert_eq!(
+        SymbolTable::use_emit_qualifier(
+            Some("mycelium_std_fs"),
+            "std.fs.error",
+            "mycelium_std_fs.error"
+        ),
+        "std.fs.error"
+    );
+}
+
+#[test]
+fn use_emit_qualifier_keeps_full_nodule_for_cross_crate_in_one_batch() {
+    assert_eq!(
+        SymbolTable::use_emit_qualifier(Some("crate_a"), "crate.b", "crate_b"),
+        "crate.b"
+    );
+}
+
+#[test]
+fn use_emit_qualifier_bare_fixture_key_same_as_pre_m1084() {
+    assert_eq!(
+        SymbolTable::use_emit_qualifier(None, "checkty", "checkty"),
+        "checkty"
+    );
+}
+
+// ── L2-B: type_def extract + module-keyed co-include closure ────────────────────────────────────
+
+#[test]
+fn extract_type_defs_picks_single_line_type_and_pub_type() {
+    let myc = "\
+nodule std.fs.error;
+pub type ErrnoClass = NotFound | Other;
+type FsErr = NotFound(Bytes) | Os(Bytes, ErrnoClass);
+fn helper(x: Bool) => Bool = x;
+";
+    let defs = extract_type_defs(myc);
+    assert_eq!(defs.len(), 2, "got {defs:?}");
+    assert!(
+        defs["ErrnoClass"].starts_with("pub type ErrnoClass"),
+        "{:?}",
+        defs["ErrnoClass"]
+    );
+    assert!(
+        defs["FsErr"].starts_with("type FsErr"),
+        "{:?}",
+        defs["FsErr"]
+    );
+}
+
+/// G-α L2-B non-type: free-fn extract mirrors type extract (single-line only).
+#[test]
+fn extract_fn_defs_picks_single_line_fn_and_pub_fn() {
+    let myc = "\
+nodule std.io.io;
+pub type Source = Source(Binary{8});
+// doc comment should not block the next line
+pub fn read_all(src: Source) => Result[Vec[Binary{8}], IoError] = Ok(src);
+fn helper(x: Bool) => Bool = x;
+fn incomplete(x: Bool) => Bool
+";
+    let defs = extract_fn_defs(myc);
+    assert_eq!(
+        defs.len(),
+        2,
+        "incomplete multi-line must be skipped; got {defs:?}"
+    );
+    assert!(
+        defs["read_all"].starts_with("pub fn read_all"),
+        "{:?}",
+        defs["read_all"]
+    );
+    assert!(
+        defs["helper"].starts_with("fn helper"),
+        "{:?}",
+        defs["helper"]
+    );
+    assert!(
+        !defs.contains_key("Source"),
+        "types must not be captured as fns"
+    );
+}
+
+#[test]
+fn fn_def_lookup_is_module_keyed_and_emitted_filtered() {
+    let mut table = SymbolTable::new();
+    let mut fns = std::collections::HashMap::new();
+    fns.insert(
+        "read_all".to_string(),
+        "pub fn read_all(src: Source) => Unit = unit;".to_string(),
+    );
+    fns.insert(
+        "gapped_fn".to_string(),
+        "fn gapped_fn() => Unit = unit;".to_string(),
+    );
+    table.insert(
+        "io".to_string(),
+        "std.io.io".to_string(),
+        ["read_all".to_string()].into_iter().collect(), // gapped_fn not emitted
+        std::collections::HashMap::new(),
+        fns,
+    );
+    assert_eq!(
+        table
+            .fn_def("io", "read_all")
+            .map(|s| s.starts_with("pub fn")),
+        Some(true)
+    );
+    assert_eq!(
+        table.fn_def("io", "gapped_fn"),
+        None,
+        "never surface a non-emitted free-fn"
+    );
+    assert_eq!(table.fn_def("missing", "read_all"), None);
+    let lines = table.fn_def_lines(&[("io".to_string(), "read_all".to_string())]);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].0, "std.io.io");
+}
+
+#[test]
+fn type_def_closure_is_module_keyed_not_bare_name_first_wins() {
+    let mut table = SymbolTable::new();
+    table.insert(
+        "crate_a".to_string(),
+        "crate.a".to_string(),
+        ["Foo".to_string()].into_iter().collect(),
+        [("Foo".to_string(), "type Foo = Foo(Binary{8});".to_string())]
+            .into_iter()
+            .collect(),
+        std::collections::HashMap::new(),
+    );
+    table.insert(
+        "crate_b".to_string(),
+        "crate.b".to_string(),
+        ["Foo".to_string()].into_iter().collect(),
+        [("Foo".to_string(), "type Foo = Foo(Binary{16});".to_string())]
+            .into_iter()
+            .collect(),
+        std::collections::HashMap::new(),
+    );
+    // Seed from crate_b only — must get Binary{16}, never crate_a's Binary{8}.
+    let closure = table.type_def_closure(&[("crate_b".to_string(), "Foo".to_string())]);
+    assert_eq!(closure.len(), 1, "{closure:?}");
+    assert_eq!(closure[0].0, "crate.b");
+    assert!(
+        closure[0].1.contains("Binary{16}"),
+        "module-keyed seed must not first-wins across crates; got {:?}",
+        closure[0]
+    );
+}
+
+#[test]
+fn type_def_closure_pulls_transitive_deps_from_same_home() {
+    let mut table = SymbolTable::new();
+    let mut defs = std::collections::HashMap::new();
+    defs.insert(
+        "ErrnoClass".to_string(),
+        "type ErrnoClass = NotFound | Other;".to_string(),
+    );
+    defs.insert(
+        "FsErr".to_string(),
+        "type FsErr = Os(Bytes, ErrnoClass);".to_string(),
+    );
+    table.insert(
+        "error".to_string(),
+        "std.fs.error".to_string(),
+        ["ErrnoClass".to_string(), "FsErr".to_string()]
+            .into_iter()
+            .collect(),
+        defs,
+        std::collections::HashMap::new(),
+    );
+    let closure = table.type_def_closure(&[("error".to_string(), "FsErr".to_string())]);
+    let names: Vec<&str> = closure
+        .iter()
+        .filter_map(|(_, d)| {
+            d.trim()
+                .strip_prefix("type ")
+                .and_then(|r| r.split('=').next())
+                .map(str::trim)
+        })
+        .collect();
+    assert!(
+        names.contains(&"ErrnoClass") && names.contains(&"FsErr"),
+        "transitive ErrnoClass must co-include with FsErr; got {names:?}"
+    );
+    // ErrnoClass before FsErr (dep before user).
+    let ei = names.iter().position(|n| *n == "ErrnoClass").unwrap();
+    let fi = names.iter().position(|n| *n == "FsErr").unwrap();
+    assert!(ei < fi, "ErrnoClass must precede FsErr; order={names:?}");
 }
