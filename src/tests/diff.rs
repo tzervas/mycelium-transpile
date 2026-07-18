@@ -135,16 +135,17 @@ fn widen_impls_never_fabricate_from_in_real_crate() {
          Mycelium builtin — G2/DN-34 §4), got:\n{emitted_myc}"
     );
 
-    // The 10 unsigned Binary-to-Binary widen impls now emit faithfully via width_cast.
+    // Express gap-close 2026-07-16: unsigned Binary-to-Binary widens emit as free-fns
+    // (`widen_free Binary{N} -> Binary{M}`) with real width_cast bodies — no ambient trait.
     let width_cast_widen_count = report
         .emitted_items
         .iter()
-        .filter(|n| n.starts_with("impl Widen[Binary{") && n.contains("for Binary{"))
+        .filter(|n| n.starts_with("widen_free Binary{"))
         .count();
     assert!(
         width_cast_widen_count >= 10,
-        "expected at least the 10 unsigned-integer-chain Widen impls to be emitted via \
-         width_cast, got {width_cast_widen_count} in emitted_items={:?}",
+        "expected at least the 10 unsigned-integer-chain Widen free-fns via width_cast, got \
+         {width_cast_widen_count} in emitted_items={:?}",
         report.emitted_items
     );
     let width_cast_call_count = emitted_myc.matches("width_cast(self,").count();

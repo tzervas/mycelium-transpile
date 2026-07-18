@@ -152,12 +152,11 @@ fn fold_option_with_closure_and_value_inlines() {
 /// design (it was `Declared`/unverified) — a nested inlined `match` used as an outer match's
 /// scrutinee does NOT `myc check`-clean without a type ascription this transpiler cannot generally
 /// derive (see `combinator_receiver_kind`'s doc for the full empirical finding). So
-/// `combinator_receiver_kind` never resolves a `MethodCall` receiver: the INNER `.map` still
-/// inlines on its own (`r` resolves directly), but the OUTER `.map_err`'s receiver (the inner
-/// `MethodCall`) does not resolve, so it declines and falls through to the unchanged generic
-/// desugar — which then hits the pre-existing DN-118 gap on `.map_err`'s own `|_|` closure
-/// (untyped wildcard). Net effect: the whole function gaps honestly rather than emitting an
-/// unsound nested `match` — never a half-inlined/incorrect chain.
+/// `combinator_receiver_kind` never resolves a `MethodCall` receiver: the OUTER `.map_err`'s
+/// receiver (the inner `MethodCall`) does not resolve, the combinator pass declines, and **G-β
+/// Rank A** then refuses the bare free-fn desugar (`map_err(...)` is not a proven-emitted
+/// referent) — the whole function gaps honestly rather than emitting an unsound nested `match`
+/// **or** a fabricated free-fn around a partial inline (G2/VR-5).
 #[test]
 fn map_then_map_err_chain_declines_outer_and_gaps_never_emits_unsound_nesting() {
     let rust = "fn f(flag: u8, fallback: u8, r: Result<u8, u8>) -> Result<u8, u8> { \
@@ -166,22 +165,22 @@ fn map_then_map_err_chain_declines_outer_and_gaps_never_emits_unsound_nesting() 
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
         !report.emitted_items.iter().any(|n| n == "f"),
-        "expected NO emission (the outer combinator's unresolved receiver sinks the whole fn via \
-         the pre-existing DN-118 closure gap), got emitted_items={:?}, myc=\n{myc}",
+        "expected NO emission (outer combinator declines + G-β Rank A refuses bare map_err), got \
+         emitted_items={:?}, myc=\n{myc}",
         report.emitted_items
     );
     assert!(
-        !myc.contains("match (match"),
-        "must NEVER emit a nested `match`-in-`match` chain (real-toolchain-disconfirmed \
-         unsound), got:\n{myc}"
+        !myc.contains("match (match") && !myc.contains("map_err("),
+        "must NEVER emit a nested `match`-in-`match` chain or a fabricated bare `map_err(`, got:\n\
+         {myc}"
     );
     assert!(
         report
             .gaps
             .iter()
-            .any(|g| g.reason.contains("no explicit type annotation")),
-        "expected the pre-existing DN-118 closure-pattern gap on the outer `.map_err`'s `|_|`, \
-         got {:?}",
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")
+                || g.reason.contains("no explicit type annotation")),
+        "expected G-β Rank A (or legacy DN-118) gap on the outer chain, got {:?}",
         report
             .gaps
             .iter()
@@ -190,28 +189,33 @@ fn map_then_map_err_chain_declines_outer_and_gaps_never_emits_unsound_nesting() 
     );
 }
 
-/// An individually-resolvable combinator STILL inlines even when it happens to sit inside a
-/// larger chain shape — only the specific OUTER call whose receiver is unresolvable declines. Here
-/// `.map(|()| flag)`'s own receiver `r` resolves directly, so it inlines on its own merits
-/// (verified via a case where the outer call uses a function-value argument instead of a closure,
-/// so nothing downstream of the inner `.map` gaps).
+/// A chain whose outer combinator declines must **not** fabricate a free-fn wrapper around a
+/// partial inner inline (pre-G-β this emitted `map_err(match …, bump)` — a check-failing bare
+/// `map_err`). G-β Rank A gaps the whole free fn. The INNER `.map` alone is still covered by
+/// standalone inlining tests (`map_over_unit_closure_inlines_on_result_receiver`, etc.).
 #[test]
-fn inner_combinator_of_a_chain_still_inlines_on_its_own_resolvable_receiver() {
+fn chain_outer_map_err_function_value_gaps_never_fabricates_free_fn() {
     let rust =
         "fn f(flag: u8, r: Result<u8, u8>) -> Result<u8, u8> { r.map(|()| flag).map_err(bump) }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        report.emitted_items.iter().any(|n| n == "f"),
-        "expected `f` in emitted_items, got {:?} (gaps={:?})",
-        report.emitted_items,
-        report.gaps
+        !report.emitted_items.iter().any(|n| n == "f"),
+        "expected NO emission (outer `.map_err(bump)` is not a proven free-fn referent), got \
+         emitted_items={:?} myc:\n{myc}",
+        report.emitted_items
     );
     assert!(
-        myc.contains("map_err(match (r) { Ok(_) => Ok(flag), Err(e) => Err(e) }, bump)"),
-        "expected the INNER `.map` inlined, with the OUTER `.map_err` falling through to the \
-         unchanged generic free-function call (its receiver — the inner `MethodCall` — is \
-         unresolved), got:\n{myc}"
+        !myc.contains("map_err("),
+        "must never emit bare `map_err(` (G-β Rank A poison stop), got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")),
+        "expected G-β Rank A gap, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
 
@@ -235,34 +239,40 @@ fn map_over_unit_closure_inlines_on_option_receiver() {
 }
 
 /// NEVER-SILENT (VR-5/G2) — the iterator `.map` false-fire stress test (DN-135 §5 stress #1): a
-/// `.map`-named method on a receiver NOT known to be `Result`/`Option` is left COMPLETELY
-/// untouched — the OLD generic desugar (`map(x, lambda(z: Thing) => z)`) still fires, never the
-/// combinator match-inline. The receiver gate is the exact no-guess discipline `prim_map`'s
-/// `receiver_gate_matches` already uses.
+/// `.map`-named method on a receiver NOT known to be `Result`/`Option` must NOT fire the
+/// combinator match-inline. Pre-G-β the OLD generic desugar still emitted bare `map(...)`
+/// (file-poison); **G-β Rank A** gaps instead (no proven-emitted free-fn referent). The
+/// receiver gate is the exact no-guess discipline `prim_map`'s `receiver_gate_matches` already
+/// uses.
 #[test]
-fn map_on_non_result_option_receiver_is_untouched() {
+fn map_on_non_result_option_receiver_never_inlines_and_never_fabricates() {
     let rust = "fn f(x: Thing) -> Thing { x.map(|z: Thing| z) }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        report.emitted_items.iter().any(|n| n == "f"),
-        "expected `f` in emitted_items (the generic desugar still emits SOME text), got {:?} \
-         (gaps={:?})",
-        report.emitted_items,
-        report.gaps
+        !report.emitted_items.iter().any(|n| n == "f"),
+        "expected `f` to gap (no proven `map` free-fn referent on non-Result/Option), got \
+         emitted_items={:?} myc:\n{myc}",
+        report.emitted_items
     );
     assert!(
-        myc.contains("map(x, lambda(z: Thing) => z)") && !myc.contains("match"),
-        "expected the UNCHANGED generic desugar, no `match`-inline, since `Thing` is not a known \
-         Result/Option receiver — got:\n{myc}"
+        !myc.contains("map(") && !myc.contains("match"),
+        "must neither combinator-inline nor fabricate bare `map(`, got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")),
+        "expected G-β Rank A gap, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
 
 /// NEVER-SILENT (VR-5/G2) — an UNRESOLVED receiver (a Call expression this transpiler has no
 /// return-type resolution for, DN-135 §5 stress #2's bounded-faithfulness point) makes the
-/// combinator pass decline; the call falls through to the unchanged generic desugar, which then
-/// hits the PRE-EXISTING DN-118 closure-pattern gap for the `|()|` param (never a fabricated
-/// `Ok`/`Err`).
+/// combinator pass decline; **G-β Rank A** then refuses the bare free-fn desugar (never a
+/// fabricated `Ok`/`Err` **or** bare `map(...)`).
 #[test]
 fn map_over_unresolved_call_receiver_gaps_never_fabricates() {
     let rust = "fn f() -> Result<u8, u8> { make_result().map(|()| 5) }";
@@ -270,20 +280,21 @@ fn map_over_unresolved_call_receiver_gaps_never_fabricates() {
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
         !report.emitted_items.iter().any(|n| n == "f"),
-        "expected NO emission (the closure-pattern gap should sink the whole fn), got \
+        "expected NO emission (unresolved receiver + Rank A / closure residual), got \
          emitted_items={:?}, myc=\n{myc}",
         report.emitted_items
     );
     assert!(
-        !myc.contains("Ok(") && !myc.contains("Err("),
-        "must never fabricate an `Ok`/`Err` construction for an unresolved receiver, got:\n{myc}"
+        !myc.contains("Ok(") && !myc.contains("Err(") && !myc.contains("map("),
+        "must never fabricate `Ok`/`Err` or bare `map(` for an unresolved receiver, got:\n{myc}"
     );
     assert!(
         report
             .gaps
             .iter()
-            .any(|g| g.reason.contains("no explicit type annotation")),
-        "expected the pre-existing DN-118 closure-pattern gap, got {:?}",
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")
+                || g.reason.contains("no explicit type annotation")),
+        "expected G-β Rank A (or legacy DN-118) gap, got {:?}",
         report
             .gaps
             .iter()
@@ -293,8 +304,9 @@ fn map_over_unresolved_call_receiver_gaps_never_fabricates() {
 }
 
 /// NEVER-SILENT (VR-5/G2) — a multi-parameter closure argument (DN-135 §3 item 3's "multi-param /
-/// value-unsafe closure" fallthrough) declines to inline and inherits the pre-existing DN-118
-/// multi-param gap unchanged.
+/// value-unsafe closure" fallthrough) declines combinator inline; **G-β Rank A** then refuses
+/// bare `map(...)` free-fn desugar (the pre-G-β path re-derived DN-118 via the generic desugar's
+/// arg emit — both end in a gap, Rank A never fabricates the free name first).
 #[test]
 fn map_with_multi_param_closure_declines_and_gaps() {
     let rust = "fn f(r: Result<u8, u8>) -> Result<u8, u8> { r.map(|a: u8, b: u8| a) }";
@@ -302,13 +314,20 @@ fn map_with_multi_param_closure_declines_and_gaps() {
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
         !report.emitted_items.iter().any(|n| n == "f"),
-        "expected NO emission (multi-param closure gaps), got emitted_items={:?}, myc=\n{myc}",
+        "expected NO emission (multi-param closure / Rank A), got emitted_items={:?}, myc=\n{myc}",
         report.emitted_items
     );
     assert!(
-        report.gaps.iter().any(|g| g.category == Category::Closure
-            && g.reason.contains("no auto-emittable Mechanical form")),
-        "expected the pre-existing DN-118 multi-param gap, got {:?}",
+        !myc.contains("map("),
+        "must never emit bare `map(` for a declined combinator, got:\n{myc}"
+    );
+    assert!(
+        report.gaps.iter().any(|g| {
+            (g.category == Category::Closure
+                && g.reason.contains("no auto-emittable Mechanical form"))
+                || g.reason.contains("no proven-emitted free-fn referent")
+        }),
+        "expected DN-118 multi-param and/or G-β Rank A gap, got {:?}",
         report
             .gaps
             .iter()
@@ -318,8 +337,8 @@ fn map_with_multi_param_closure_declines_and_gaps() {
 }
 
 /// NEVER-SILENT (VR-5/G2) — a closure that mutates a captured outer binding in place (DN-135 §5
-/// stress #4's DN-109 D5/D7 safety gate, applied BEFORE inlining) declines to inline and
-/// inherits the pre-existing capture-mutation gap unchanged.
+/// stress #4's DN-109 D5/D7 safety gate, applied BEFORE inlining) declines combinator inline;
+/// **G-β Rank A** then refuses bare `map(...)` free-fn desugar.
 #[test]
 fn map_with_capture_mutating_closure_declines_and_gaps() {
     let rust = "fn f(mut acc: u8, r: Result<u8, u8>) -> Result<u8, u8> { \
@@ -328,17 +347,20 @@ fn map_with_capture_mutating_closure_declines_and_gaps() {
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
         !report.emitted_items.iter().any(|n| n == "f"),
-        "expected NO emission (capture-mutating closure gaps), got emitted_items={:?}, \
+        "expected NO emission (capture-mutating closure / Rank A), got emitted_items={:?}, \
          myc=\n{myc}",
         report.emitted_items
     );
     assert!(
-        report
-            .gaps
-            .iter()
-            .any(|g| g.category == Category::Closure
-                && g.reason.contains("cannot be proven value-safe")),
-        "expected the pre-existing DN-109 capture-mutation gap, got {:?}",
+        !myc.contains("map("),
+        "must never emit bare `map(` for a declined combinator, got:\n{myc}"
+    );
+    assert!(
+        report.gaps.iter().any(|g| {
+            (g.category == Category::Closure && g.reason.contains("cannot be proven value-safe"))
+                || g.reason.contains("no proven-emitted free-fn referent")
+        }),
+        "expected DN-109 capture-mutation and/or G-β Rank A gap, got {:?}",
         report
             .gaps
             .iter()
@@ -347,22 +369,31 @@ fn map_with_capture_mutating_closure_declines_and_gaps() {
     );
 }
 
-/// A function-VALUE argument (no body to inline — Alt B's residual role, DN-135 §3 item 3) keeps
-/// the unchanged `m(recv, f)` free-function call; the combinator pass does not touch it.
+/// A function-VALUE argument (no body to inline — Alt B's residual role, DN-135 §3 item 3): the
+/// combinator pass does not touch it. Pre-G-β the generic desugar emitted bare `map(r, bump)`
+/// (file-poison — `map` is not a proven free-fn). **G-β Rank A** gaps instead (G2/VR-5).
 #[test]
-fn map_with_function_value_argument_keeps_generic_call() {
+fn map_with_function_value_argument_gaps_never_fabricates_free_fn() {
     let rust = "fn f(r: Result<u8, u8>) -> Result<u8, u8> { r.map(bump) }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        report.emitted_items.iter().any(|n| n == "f"),
-        "expected `f` in emitted_items, got {:?} (gaps={:?})",
-        report.emitted_items,
-        report.gaps
+        !report.emitted_items.iter().any(|n| n == "f"),
+        "expected `f` to gap (function-value `.map` is not a proven free-fn referent), got \
+         emitted_items={:?} myc:\n{myc}",
+        report.emitted_items
     );
     assert!(
-        myc.contains("map(r, bump)") && !myc.contains("match"),
-        "expected the UNCHANGED generic free-function call, no `match`-inline, got:\n{myc}"
+        !myc.contains("map(") && !myc.contains("match"),
+        "must neither combinator-inline nor fabricate bare `map(`, got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")),
+        "expected G-β Rank A gap, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
 
@@ -415,25 +446,16 @@ fn inlined_combinator_forms_check_clean_against_real_toolchain() {
             "case {i} (`{rust}`) failed to emit at all: gaps={:?}",
             report.gaps
         );
-        // A self-contained nodule needs `Result`/`Option` declared locally so `myc check` can
-        // resolve `Ok`/`Err`/`Some`/`None` with no cross-nodule import (a standalone `.myc` file
-        // has no `lib/std` search path here) — the SAME `type Result[A, E] = Ok(A) | Err(E);` /
-        // `type Option[A] = Some(A) | None;` shapes `lib/std/result.myc:10`/`lib/std/option.myc:9`
-        // declare, inserted right after the rendered nodule header.
-        let full = myc.replacen(
-            &format!("nodule {NODULE_PATH};\n\n"),
-            &format!(
-                "nodule {NODULE_PATH};\n\ntype Result[A, E] = Ok(A) | Err(E);\ntype Option[A] = \
-                 Some(A) | None;\n\n"
-            ),
-            1,
-        );
-        assert_ne!(
-            full, myc,
-            "case {i}: expected the nodule-header insertion point to be found, got:\n{myc}"
+        // G-α Rank-1 ambient co-emit: Result/Option type shapes matching lib/std/result.myc /
+        // option.myc are co-emitted when signatures mention them — no manual inject (would
+        // double-define). Combinators stay emitted via the M-1092 rewrite path, not ambient.
+        assert!(
+            myc.contains("type Result[A, E] = Ok(A) | Err(E);")
+                || myc.contains("type Option[A] = Some(A) | None;"),
+            "case {i}: expected ambient Result and/or Option co-emit, got:\n{myc}"
         );
         let path = dir.join(format!("case_{i}.myc"));
-        std::fs::write(&path, &full).expect("write case .myc");
+        std::fs::write(&path, &myc).expect("write case .myc");
 
         let checker = crate::vet::MycChecker {
             command: vec![bin.display().to_string()],
@@ -443,7 +465,7 @@ fn inlined_combinator_forms_check_clean_against_real_toolchain() {
         assert_eq!(
             rec.class,
             crate::vet::VetClass::Clean,
-            "case {i} (`{rust}`) must check CLEAN with the real myc-check oracle — emitted:\n{full}\n\
+            "case {i} (`{rust}`) must check CLEAN with the real myc-check oracle — emitted:\n{myc}\n\
              diagnostic={:?}",
             rec.diagnostic
         );

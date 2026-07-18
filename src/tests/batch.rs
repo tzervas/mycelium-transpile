@@ -496,11 +496,11 @@ fn cross_nodule_use_partially_resolves_against_a_batch_sibling() {
         .find(|r| r.path.file_name().unwrap() == "mono.rs")
         .expect("mono.rs result present");
 
-    // The resolved leaf landed as real emitted `.myc` text, home-qualified against checkty's own
-    // derived nodule path — never a bare `Width` (no-bare-name-collapse, the M-1060 lesson).
+    // L2-B: a resolved *type* leaf co-includes the sibling type surface (oracle self-containment)
+    // with EXPLAIN naming the home path — never a bare `use Width;` short-form collapse.
     assert!(
-        mono.myc.contains("use checkty.Width;") || mono.myc.contains(".Width;"),
-        "expected a qualified `use ….Width;` line in mono.myc, got:\n{}",
+        mono.myc.contains("type Width") || mono.myc.contains("use checkty.Width;"),
+        "expected co-include `type Width` (L2-B) or qualified use in mono.myc, got:\n{}",
         mono.myc
     );
     assert!(
@@ -513,8 +513,8 @@ fn cross_nodule_use_partially_resolves_against_a_batch_sibling() {
         mono.report
             .emitted_items
             .iter()
-            .any(|n| n.starts_with("use:") && n.contains("Width")),
-        "expected an emitted `use:…Width…` item, got {:?}",
+            .any(|n| n.contains("Width")),
+        "expected an emitted item naming Width, got {:?}",
         mono.report.emitted_items
     );
 
@@ -607,9 +607,11 @@ fn qualified_call_to_cross_nodule_associated_fn_is_a_currently_honest_no_op() {
         .find(|r| r.path.file_name().unwrap() == "bar.rs")
         .expect("bar.rs result present");
 
-    // The `use crate::foo::Foo;` leaf itself DOES resolve — a real, home-qualified `use` line.
+    // The `use crate::foo::Foo;` leaf itself DOES resolve — L2-B co-includes the type (or full-path use).
     assert!(
-        bar.myc.contains("use foo.Foo;") || bar.myc.contains(".Foo;"),
+        bar.myc.contains("type Foo")
+            || bar.myc.contains("use foo.Foo;")
+            || bar.myc.contains(".Foo;"),
         "expected the `Foo` import to resolve (unaffected by this DN-133 tier), got:\n{}",
         bar.myc
     );
@@ -742,8 +744,15 @@ fn self_and_super_relative_use_resolve_within_one_crate() {
         .find(|r| r.path.ends_with("foo/mod.rs"))
         .expect("foo/mod.rs result present");
     assert!(
-        foo_mod.myc.contains(".Thing;") && !foo_mod.myc.lines().any(|l| l.trim() == "use Thing;"),
-        "self::bar::Thing must resolve to a qualified use, never a bare `use Thing;`; got:\n{}",
+        (foo_mod.myc.contains("type Thing") || foo_mod.myc.contains("use mycrate.foo.bar.Thing;"))
+            && !foo_mod.myc.lines().any(|l| l.trim() == "use Thing;"),
+        "self::bar::Thing must resolve to L2-B co-include or full-path use (M-1084), never bare; \
+         got:\n{}",
+        foo_mod.myc
+    );
+    assert!(
+        foo_mod.myc.contains("mycrate.foo.bar") || foo_mod.myc.contains("type Thing"),
+        "provenance/home path or co-include must appear; got:\n{}",
         foo_mod.myc
     );
 
@@ -752,9 +761,10 @@ fn self_and_super_relative_use_resolve_within_one_crate() {
         .find(|r| r.path.ends_with("mono/mod.rs"))
         .expect("mono/mod.rs result present");
     assert!(
-        mono_mod.myc.contains(".Width;") && !mono_mod.myc.lines().any(|l| l.trim() == "use Width;"),
-        "super::checkty::Width must resolve (super:: goes up to the crate root, back down to \
-         checkty) to a qualified use, never a bare `use Width;`; got:\n{}",
+        (mono_mod.myc.contains("type Width") || mono_mod.myc.contains("use mycrate.checkty.Width;"))
+            && !mono_mod.myc.lines().any(|l| l.trim() == "use Width;"),
+        "super::checkty::Width must resolve to L2-B co-include or full-path use (M-1084), never bare; \
+         got:\n{}",
         mono_mod.myc
     );
 
@@ -805,17 +815,20 @@ fn cross_phylum_use_resolves_against_a_sibling_crate_in_the_same_batch() {
         .find(|r| r.path.ends_with("crate-a/src/lib.rs"))
         .expect("crate-a lib.rs result present");
     assert!(
-        a.myc.contains(".Foo;") && !a.myc.lines().any(|l| l.trim() == "use Foo;"),
-        "use crate_b::Foo must resolve cross-phylum to a qualified use, never a bare `use Foo;`; \
+        (a.myc.contains("type Foo") || a.myc.contains(".Foo;"))
+            && !a.myc.lines().any(|l| l.trim() == "use Foo;"),
+        "use crate_b::Foo must resolve cross-phylum (L2-B co-include or qualified use), never bare; \
          got:\n{}",
         a.myc
     );
     assert!(
-        a.report
-            .emitted_items
-            .iter()
-            .any(|n| n.starts_with("use:") && n.contains("Foo")),
-        "expected an emitted `use:…Foo…` item, got {:?}",
+        a.myc.contains("crate.b") || a.myc.contains("homes: crate.b"),
+        "cross-phylum resolve must name sibling home crate.b; got:\n{}",
+        a.myc
+    );
+    assert!(
+        a.report.emitted_items.iter().any(|n| n.contains("Foo")),
+        "expected an emitted item naming Foo, got {:?}",
         a.report.emitted_items
     );
 
@@ -862,13 +875,19 @@ fn same_crate_submodule_shadows_a_same_named_sibling_phylum() {
         .find(|r| r.path.ends_with("crate-a/src/lib.rs"))
         .unwrap();
     assert!(
-        a.myc.contains("a.crate_b.Foo") || a.myc.contains(".crate_b.Foo"),
-        "expected the SAME-CRATE submodule interpretation to win (a.crate_b.Foo), not the sibling \
-         phylum's crate-b.Foo; got:\n{}",
+        a.myc.contains("crate.a.crate_b")
+            || a.myc.lines().any(|l| {
+                let t = l.trim();
+                t == "use a.crate_b.Foo;" || t.contains("a.crate_b.Foo")
+            }),
+        "expected the SAME-CRATE submodule interpretation to win (home crate.a.crate_b co-include \
+         or full-path use), not the sibling phylum's crate.b; got:\n{}",
         a.myc
     );
     assert!(
-        !a.myc.contains("use crate.b.Foo") && !a.myc.lines().any(|l| l.contains("use crate.b.")),
+        !a.myc.contains("use crate.b.Foo")
+            && !a.myc.lines().any(|l| l.contains("use crate.b."))
+            && !a.myc.contains("homes: crate.b"),
         "must never resolve against the sibling phylum when a same-crate submodule shadows it; \
          got:\n{}",
         a.myc
@@ -923,14 +942,14 @@ fn cross_phylum_use_from_non_root_file_wins_over_unrelated_same_crate_submodule(
         .find(|r| r.path.ends_with("crate-a/src/sub.rs"))
         .expect("crate-a/src/sub.rs result present");
     assert!(
-        sub.myc.lines().any(|l| l.trim() == "use crate.b.Foo;"),
-        "expected sub.rs's bare `use crate_b::Foo;` to resolve CROSS-PHYLUM to the sibling \
-         crate-b's own nodule path (`use crate.b.Foo;`), never crate-a's own same-named \
-         submodule; got:\n{}",
+        sub.myc.contains("homes: crate.b")
+            || sub.myc.lines().any(|l| l.trim() == "use crate.b.Foo;"),
+        "expected sub.rs's bare `use crate_b::Foo;` to resolve CROSS-PHYLUM to sibling crate.b \
+         (co-include home or `use crate.b.Foo;`), never crate-a's same-named submodule; got:\n{}",
         sub.myc
     );
     assert!(
-        !sub.myc.lines().any(|l| l.contains("crate.a.crate_b.Foo")),
+        !sub.myc.contains("crate.a.crate_b"),
         "must NEVER resolve against crate-a's own same-crate `crate_b` submodule (nodule path \
          `crate.a.crate_b`) from a non-root file -- that submodule is not lexically in scope \
          there; got:\n{}",
@@ -1036,9 +1055,14 @@ fn same_named_bare_submodule_across_two_crates_does_not_cross_contaminate_symbol
 
     // Each crate's own `use crate::rng::Thing;` must resolve to ITS OWN `rng` (never bare, and
     // never the SIBLING crate's `rng`) — the cross-contamination the qualified-key fix prevents.
+    // L2-B: co-include EXPLAIN names the home; or full-path use.
     assert!(
-        a.myc.contains("crate.a.rng.Thing") || a.myc.contains("a.rng.Thing"),
-        "crate-a's use must resolve to crate-a's OWN rng.rs; got:\n{}",
+        a.myc.contains("crate.a.rng")
+            || a.myc.lines().any(|l| {
+                let t = l.trim();
+                t.contains("crate.a.rng.Thing") || t.contains("a.rng.Thing")
+            }),
+        "crate-a's use must resolve to crate-a's OWN rng.rs as full nodule path; got:\n{}",
         a.myc
     );
     assert!(
@@ -1048,8 +1072,12 @@ fn same_named_bare_submodule_across_two_crates_does_not_cross_contaminate_symbol
         a.myc
     );
     assert!(
-        b.myc.contains("crate.b.rng.Thing") || b.myc.contains("b.rng.Thing"),
-        "crate-b's use must resolve to crate-b's OWN rng.rs; got:\n{}",
+        b.myc.contains("crate.b.rng")
+            || b.myc.lines().any(|l| {
+                let t = l.trim();
+                t.contains("crate.b.rng.Thing") || t.contains("b.rng.Thing")
+            }),
+        "crate-b's use must resolve to crate-b's OWN rng.rs as full nodule path; got:\n{}",
         b.myc
     );
     assert!(
@@ -1126,13 +1154,287 @@ proptest! {
             prop_assert!(!leaf.myc.lines().any(|l| l.trim() == "use Marker;"));
         } else {
             // `depth` levels deep reached via exactly `depth` `super::` segments lands EXACTLY at
-            // the crate root, where `target.rs` lives — must resolve, and never bare.
+            // the crate root, where `target.rs` lives — must resolve (L2-B co-include or use),
+            // never bare.
             prop_assert!(
-                leaf.myc.contains(".Marker;"),
-                "depth {depth}: expected a qualified use of Marker; got:\n{}",
+                leaf.myc.contains("type Marker") || leaf.myc.contains(".Marker;"),
+                "depth {depth}: expected co-include or qualified use of Marker; got:\n{}",
                 leaf.myc
             );
             prop_assert!(!leaf.myc.lines().any(|l| l.trim() == "use Marker;"));
         }
     }
+}
+
+/// M-1084 net-close + L2-B phase-2: under a real `mycelium-*/src` layout a resolved **type**
+/// import co-includes with EXPLAIN naming the **full** home nodule path (`std.fs.error`) — never
+/// the PR #1635 crate-root-stripped short form (`error.FsErr`).
+#[test]
+fn m1084_full_nodule_path_use_emit_under_mycelium_crate_layout() {
+    let tmp = TempDir::new("m1084-full-path");
+    tmp.write(
+        "mycelium-std-fs/src/error.rs",
+        "pub struct FsErr(u8);\nfn helper(x: bool) -> bool { x }",
+    );
+    tmp.write(
+        "mycelium-std-fs/src/substrate.rs",
+        "use crate::error::FsErr;\nfn sub_helper(x: bool) -> bool { x }",
+    );
+
+    let files = discover_rs_files(tmp.path()).expect("discover succeeds");
+    let (results, failures) = transpile_batch(&files);
+    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+
+    let sub = results
+        .iter()
+        .find(|r| r.path.ends_with("substrate.rs"))
+        .expect("substrate.rs present");
+    // L2-B co-include for types; EXPLAIN retains full home path provenance (M-1084).
+    assert!(
+        sub.myc.contains("type FsErr") && sub.myc.contains("std.fs.error"),
+        "expected co-include of FsErr with full home path `std.fs.error` in EXPLAIN; got:\n{}",
+        sub.myc
+    );
+    assert!(
+        !sub.myc.lines().any(|l| l.trim() == "use error.FsErr;"),
+        "must never emit crate-root-stripped short form (checker-rejected); got:\n{}",
+        sub.myc
+    );
+
+    // Live phylum-mode differential when myc-check is built — co-include remains Clean under phylum.
+    let Some(bin) = super::vet::find_myc_check() else {
+        eprintln!(
+            "m1084 full-path live myc-check skipped — set MYC_CHECK_CMD or build \
+             `cargo build -p mycelium-check --bin myc-check`"
+        );
+        return;
+    };
+    let out = TempDir::new("m1084-full-path-vet");
+    for r in &results {
+        let name = r.path.file_stem().and_then(|s| s.to_str()).unwrap_or("x");
+        fs::write(out.path().join(format!("{name}.myc")), &r.myc).expect("write myc");
+    }
+    let status = std::process::Command::new(&bin)
+        .arg("--phylum")
+        .arg(out.path())
+        .arg("--json")
+        .output()
+        .expect("spawn myc-check");
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.status.success() || stdout.contains("\"ok\":true"),
+        "phylum check of co-included type imports must Clean; status={:?} out={stdout} err={}",
+        status.status,
+        String::from_utf8_lossy(&status.stderr)
+    );
+}
+
+/// ONESHOT L2-B phase-2: batch-resolved **type** imports co-include sibling type surface so
+/// **single-file oracle** is self-contained (no longer false-fails with `no such name`).
+///
+/// Pins: (1) EXPLAIN (L2-B/DN-124) with full home path; (2) `type FsErr` co-include, never short
+/// `use error.FsErr`; (3) oracle Clean; (4) phylum Clean. Skips live myc-check when binary absent.
+#[test]
+fn l2b_resolved_type_co_include_oracle_and_phylum_clean() {
+    let tmp = TempDir::new("l2b-oracle-coincluded");
+    tmp.write(
+        "mycelium-std-fs/src/error.rs",
+        "pub struct FsErr(u8);\nfn helper(x: bool) -> bool { x }",
+    );
+    tmp.write(
+        "mycelium-std-fs/src/substrate.rs",
+        "use crate::error::FsErr;\nfn sub_helper(x: bool) -> bool { x }",
+    );
+
+    let files = discover_rs_files(tmp.path()).expect("discover succeeds");
+    let (results, failures) = transpile_batch(&files);
+    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+
+    let sub = results
+        .iter()
+        .find(|r| r.path.ends_with("substrate.rs"))
+        .expect("substrate.rs present");
+    assert!(
+        sub.myc.contains("type FsErr") && sub.myc.contains("EXPLAIN (L2-B"),
+        "batch must co-include sibling type with L2-B EXPLAIN; got:\n{}",
+        sub.myc
+    );
+    assert!(
+        sub.myc.contains("std.fs.error"),
+        "EXPLAIN must name full home nodule path (M-1084 provenance); got:\n{}",
+        sub.myc
+    );
+    assert!(
+        !sub.myc
+            .lines()
+            .any(|l| l.trim() == "use error.FsErr;" || l.trim() == "use FsErr;"),
+        "must never short-form collapse; got:\n{}",
+        sub.myc
+    );
+    assert!(
+        sub.report
+            .emitted_items
+            .iter()
+            .any(|n| n.contains("FsErr") && n.contains("co-include")),
+        "expected emitted co-include:…FsErr item, got {:?}",
+        sub.report.emitted_items
+    );
+
+    let Some(bin) = super::vet::find_myc_check() else {
+        eprintln!(
+            "l2b co-include live myc-check skipped — set MYC_CHECK_CMD or build \
+             `cargo build -p mycelium-check --bin myc-check`"
+        );
+        return;
+    };
+
+    let out = TempDir::new("l2b-oracle-coincluded-vet");
+    let mut sub_myc_path = None;
+    for r in &results {
+        let name = r.path.file_stem().and_then(|s| s.to_str()).unwrap_or("x");
+        let path = out.path().join(format!("{name}.myc"));
+        fs::write(&path, &r.myc).expect("write myc");
+        if r.path.ends_with("substrate.rs") {
+            sub_myc_path = Some(path);
+        }
+    }
+    let sub_myc = sub_myc_path.expect("substrate.myc written");
+
+    // Oracle (single-file): co-include makes the consumer self-contained — Clean.
+    let oracle = std::process::Command::new(&bin)
+        .arg(&sub_myc)
+        .output()
+        .expect("spawn myc-check oracle");
+    let oracle_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&oracle.stdout),
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert!(
+        oracle.status.success(),
+        "oracle must Clean a type co-include (L2-B phase-2); got fail out={oracle_out}"
+    );
+
+    // Phylum co-check of the same batch: still Clean (home-qualified dual defs).
+    let phylum = std::process::Command::new(&bin)
+        .arg("--phylum")
+        .arg(out.path())
+        .arg("--json")
+        .output()
+        .expect("spawn myc-check --phylum");
+    let phylum_out = String::from_utf8_lossy(&phylum.stdout);
+    assert!(
+        phylum.status.success() || phylum_out.contains("\"ok\":true"),
+        "phylum must Clean co-included type imports; status={:?} out={phylum_out} err={}",
+        phylum.status,
+        String::from_utf8_lossy(&phylum.stderr)
+    );
+}
+
+/// G-α Rank-2 / L2-B Import non-type: batch-resolved **free-fn** imports co-include sibling
+/// free-fn surface (plus type deps on the fn line) so single-file oracle no longer false-fails
+/// with `no such name …read_all` from a phylum-of-one `use`.
+///
+/// Pins: (1) EXPLAIN (G-α L2-B/DN-124) with full home path; (2) `fn read_all` co-include, never
+/// `use std.io.io.read_all`; (3) type co-include of `Source` when referenced; (4) optional live
+/// oracle when body is self-contained (this fixture uses a trivial body).
+#[test]
+fn g_alpha_resolved_free_fn_co_include() {
+    let tmp = TempDir::new("g-alpha-fn-coinclude");
+    tmp.write(
+        "mycelium-std-io/src/io.rs",
+        "pub struct Source(u8);\npub fn read_all(src: Source) -> Source { src }\n",
+    );
+    tmp.write(
+        "mycelium-std-io/src/lib.rs",
+        "use crate::io::{read_all, Source};\nfn consumer(s: Source) -> Source { read_all(s) }\n",
+    );
+
+    let files = discover_rs_files(tmp.path()).expect("discover succeeds");
+    let (results, failures) = transpile_batch(&files);
+    assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+
+    let lib = results
+        .iter()
+        .find(|r| r.path.ends_with("lib.rs"))
+        .expect("lib.rs present");
+    assert!(
+        lib.myc.contains("fn read_all") && lib.myc.contains("EXPLAIN (G-α L2-B"),
+        "batch must co-include sibling free-fn with G-α EXPLAIN; got:\n{}",
+        lib.myc
+    );
+    assert!(
+        lib.myc.contains("std.io.io"),
+        "EXPLAIN must name full home nodule path (M-1084 provenance); got:\n{}",
+        lib.myc
+    );
+    assert!(
+        !lib.myc.lines().any(|l| {
+            let t = l.trim();
+            t == "use std.io.io.read_all;" || t.starts_with("use ") && t.contains("read_all")
+        }),
+        "must not emit full-path use for extractable free-fn; got:\n{}",
+        lib.myc
+    );
+    assert!(
+        lib.myc.contains("type Source") || lib.myc.contains("Source"),
+        "type dep Source should appear (co-include or local); got:\n{}",
+        lib.myc
+    );
+    assert!(
+        lib.report
+            .emitted_items
+            .iter()
+            .any(|n| n.contains("read_all") && n.contains("co-include")),
+        "expected emitted co-include:…read_all item, got {:?}",
+        lib.report.emitted_items
+    );
+
+    let Some(bin) = super::vet::find_myc_check() else {
+        eprintln!(
+            "g-alpha free-fn co-include live myc-check skipped — set MYC_CHECK_CMD or build \
+             `cargo build -p mycelium-check --bin myc-check`"
+        );
+        return;
+    };
+
+    let out = TempDir::new("g-alpha-fn-coinclude-vet");
+    let mut lib_myc_path = None;
+    for r in &results {
+        let name = r.path.file_stem().and_then(|s| s.to_str()).unwrap_or("x");
+        let path = out.path().join(format!("{name}.myc"));
+        fs::write(&path, &r.myc).expect("write myc");
+        if r.path.ends_with("lib.rs") {
+            lib_myc_path = Some(path);
+        }
+    }
+    let lib_myc = lib_myc_path.expect("lib.myc written");
+
+    let oracle = std::process::Command::new(&bin)
+        .arg(&lib_myc)
+        .output()
+        .expect("spawn myc-check oracle");
+    let oracle_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&oracle.stdout),
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert!(
+        oracle.status.success(),
+        "oracle must Clean a free-fn co-include (G-α Rank-2); got fail out={oracle_out}"
+    );
+
+    let phylum = std::process::Command::new(&bin)
+        .arg("--phylum")
+        .arg(out.path())
+        .arg("--json")
+        .output()
+        .expect("spawn myc-check --phylum");
+    let phylum_out = String::from_utf8_lossy(&phylum.stdout);
+    assert!(
+        phylum.status.success() || phylum_out.contains("\"ok\":true"),
+        "phylum must Clean co-included free-fn imports; status={:?} out={phylum_out} err={}",
+        phylum.status,
+        String::from_utf8_lossy(&phylum.stderr)
+    );
 }

@@ -424,17 +424,33 @@ impl crate::visit::TypeVisitor for FieldDepsVisitor<'_> {
             // Shapes `map_type` gaps outright ⇒ unmappable field.
             "Self" | "f32" => false,
             _ => {
-                // A reserved-word type name fails to lex ⇒ `map_type` gaps it (unmappable).
-                if crate::reserved::is_reserved(&name) {
-                    return false;
-                }
+                // DN-140: a reserved-word type name is still *mappable* — `map_type` rewrites it
+                // via `valid_ident` to `*_kw` (e.g. `Substrate` → `Substrate_kw`). Treating
+                // reserved as unmappable here was a field_type_user_deps/map_type drift that
+                // false-gapped every named-field struct whose field type was a reserved-word
+                // in-file type (std-io `Source { substrate: Substrate }` — L2-C residual). Count
+                // the **Rust source spelling** as a user dep so `resolvable_type_names` (keyed by
+                // source idents) can still find the in-file declaration.
                 match &seg.arguments {
                     PathArguments::None => {
                         self.out.push(name);
                         true
                     }
                     PathArguments::AngleBracketed(ab) => {
-                        self.out.push(name);
+                        // Generic application head: map_type emits `Head[arg, …]` surface text.
+                        // Most heads are user types that must resolve in-file (M-1006), but
+                        // **conditional prelude types** (currently just `Vec` — DN-138 WU-4 /
+                        // `checkty::CONDITIONAL_PRELUDE_TYPE_NAMES` / `vec_prelude`) are seeded by
+                        // myc-check when mentioned and must NOT be counted as in-file user deps.
+                        // Counting `Vec` as a dep false-gaps every named-field struct whose fields
+                        // are only `Vec<_>` / nested user types of that shape — the std-io
+                        // `Substrate`/`Source`/`Sink` residual (L2-C): structs gapped under M-1006
+                        // while free-fns like `read_all(src: Source)` still emit → `unknown type
+                        // Source` file poison (G2/VR-5). Mirror the checker: Vec is ambient when
+                        // used, so only the *type arguments* contribute user deps.
+                        if name != "Vec" {
+                            self.out.push(name);
+                        }
                         !ab.args.is_empty()
                             && ab.args.iter().all(|a| match a {
                                 syn::GenericArgument::Type(t) => field_type_user_deps(t, self.out),

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use super::{
     field_derive_kind, is_seeded_scalar_width, mangle_ty, scalar_binary_width, vec_element,
-    zero_bin_literal, DeriveCtx, DeriveHandler, DeriveOutcome, FieldDeriveKind,
+    zero_bin_literal, DeriveCtx, DeriveHandler, DeriveOutcome, EnumVariantSpec, FieldDeriveKind,
 };
 use crate::gap::{Category, GapReason};
 
@@ -19,14 +19,14 @@ fn recognizes(name: &str) -> bool {
 /// `ScalarBinary` AT OR NARROWER THAN `Binary{64}` all resolve — a `Binary{64}` field dispatches
 /// the seeded `Show` instance directly; a NARROWER width is `width_cast` up to `Binary{64}` first
 /// (DN-41; DN-138 §6 increment-2 unblock). **A width WIDER than 64 (`u128`/`i128` map to
-/// `Binary{128}`, `map.rs`) is an honest, disclosed GAP, never composed** (post-landing review
-/// fix): `width_cast(v, Binary{64})` for a `Binary{128}` value is a NARROWING cast, and
-/// `width_cast`'s own checked-narrow contract REFUSES at runtime (`EvalError::Overflow`) for any
-/// value `>= 2^64` — composing it unconditionally would let a derived `Debug` (a Rust operation
-/// that never panics) `myc-check`-clean but THROW at eval time for a real `u128` value, silently
-/// overstating this leaf's scope beyond DN-138 §6's stated `u8`/`u16`/`u32` widths. `None` also for
-/// `Float`/`Deferred`/`VecOf` (a `Vec`-of-`Vec` element is NOT a supported leaf — DN-138 WU-4's
-/// disclosed depth-1 scope).
+/// `Binary{128}`, `map.rs`) never uses a NARROWING `width_cast`** (post-landing review: that cast
+/// overflows at eval for any value `>= 2^64`, which would `myc-check` clean but THROW at runtime —
+/// silent wrong `Debug` scope, G2). **ORACLE-R1 A5:** instead of gapping the whole derive (which
+/// left same-file `UserNamed` parents like `ManualClock` calling `render(WallInstant)` with no
+/// `Show` instance — file-poison `checked_fraction` 0%), a wide scalar field renders as an opaque
+/// `Bytes` literal `"<Binary{N}>"` — structure kept, payload **not** decimal-rendered (`Declared`,
+/// not fabricated Display; VR-5). `None` still for `Float`/`Deferred`/`VecOf` (a `Vec`-of-`Vec`
+/// element is NOT a supported leaf — DN-138 WU-4's disclosed depth-1 scope).
 fn leaf_show_expr(v: &str, ft: &str) -> Option<String> {
     match field_derive_kind(ft) {
         FieldDeriveKind::UserNamed | FieldDeriveKind::BytesLike | FieldDeriveKind::BoolLike => {
@@ -36,7 +36,10 @@ fn leaf_show_expr(v: &str, ft: &str) -> Option<String> {
         FieldDeriveKind::ScalarBinary => {
             let w = scalar_binary_width(ft)?;
             if w > 64 {
-                return None; // a NARROWING width_cast can overflow at runtime -- honest gap.
+                // Declared opaque placeholder — never width_cast-narrow, never claim decimal Debug.
+                // `v` deliberately unused: the payload is not rendered (G2).
+                let _ = v;
+                return Some(format!("\"<Binary{{{w}}}>\""));
             }
             Some(format!("render(width_cast({v}, {}))", zero_bin_literal(64)))
         }
@@ -58,17 +61,20 @@ fn leaf_show_expr(v: &str, ft: &str) -> Option<String> {
 /// at all, so multiple DIFFERENT `Vec[ELEM]` fields (or the SAME `ELEM` on a second field) compose
 /// side-by-side with zero collision risk — mirrors [`super::eq`]/[`super::hash`]'s own identical,
 /// already-disclosed "plain fn, not a trait impl" deviation, for the analogous reason.
-/// **Disclosed residual (mirrors `eq.rs`'s own identical one):** if TWO DIFFERENT top-level structs
-/// in the SAME transpiled file each need `show_vec_<SAME mangled elem>`, both would compose the
-/// IDENTICAL fn text — a real `myc-check` duplicate-function refusal this row cannot deduplicate
-/// without cross-struct driver state (out of this leaf's scope, DN-136 §7's driver-untouched
-/// invariant; `lower_struct_derives` calls a row's `emit` once per struct with no cross-call state).
-fn vec_show_aux(mangled: &str, elem_ft: &str) -> String {
+/// Cross-struct dedup of `show_vec_<mangled>` rides [`crate::emit::claim_bare_fn_name`] (per-file
+/// `EmitCtx::bare_fn_names`) — L2-C residual: after `Substrate`/`Sink` both emit, two identical
+/// `show_vec_Binary_8_` bodies file-poisoned myc-check with `duplicate function`. First claim
+/// emits the aux; later claims only call the already-emitted name (G2/VR-5).
+fn vec_show_aux(mangled: &str, elem_ft: &str) -> Option<String> {
+    let fn_name = format!("show_vec_{mangled}");
+    if !crate::emit::claim_bare_fn_name(&fn_name) {
+        return None;
+    }
     let elem_expr = leaf_show_expr("h", elem_ft).expect("eligibility already checked by caller");
-    format!(
-        "fn show_vec_{mangled}(xs: Vec[{elem_ft}]) => Bytes =\n  match xs {{ Nil => \"Nil\", Cons(h, t) => \
-         bytes_concat(\"Cons(\", bytes_concat({elem_expr}, bytes_concat(\", \", bytes_concat(show_vec_{mangled}(t), \")\")))) }};"
-    )
+    Some(format!(
+        "fn {fn_name}(xs: Vec[{elem_ft}]) => Bytes =\n  match xs {{ Nil => \"Nil\", Cons(h, t) => \
+         bytes_concat(\"Cons(\", bytes_concat({elem_expr}, bytes_concat(\", \", bytes_concat({fn_name}(t), \")\")))) }};"
+    ))
 }
 
 /// Left-fold `parts` into a single `bytes_concat(...)` chain — every step stays `Bytes`-typed,
@@ -90,13 +96,14 @@ fn bytes_concat_chain(parts: &[String]) -> String {
 /// `bytes_concat` fold of `"T(", render(f0), ", ", render(f1), …, ")"`, gated per field via
 /// [`field_derive_kind`] (DN-138 §4.5) — refuses the WHOLE derive (never a partial/fabricated
 /// render, G2) the moment any field is ineligible, citing that field's index + mapped type + the
-/// real reason. **DN-138 unblock:** `UserNamed`/`BytesLike`/`BoolLike`/`ScalarBinary` (any width,
-/// via `width_cast` for narrower/wider — WU-4) fields now compose (the seeded `Show` instance
-/// resolves `render(field)` — DN-138 §4.1 Alt A); **`Vec[T]` fields now compose too** (WU-4),
-/// routed through a per-element-type auxiliary `show_vec_<mangled>` fn ([`vec_show_aux`]) rather
-/// than trait dispatch (`Vec`'s coherence head admits only one instance per file — see
-/// [`vec_show_aux`]'s doc). `Float`/`Deferred`/a `Vec`-of-ineligible-element stay honest gaps
-/// (DN-138 §6).
+/// real reason. **DN-138 unblock:** `UserNamed`/`BytesLike`/`BoolLike`/`ScalarBinary` fields now
+/// compose — narrow widths via `width_cast` up to the seeded `Binary{64}` `Show` instance, **wide
+/// widths via a Declared `"<Binary{N}>"` opaque placeholder** (ORACLE-R1 A5 — never a narrowing
+/// cast; never a whole-derive gap that file-poisons parent `UserNamed` `render` calls); **`Vec[T]`
+/// fields now compose too** (WU-4), routed through a per-element-type auxiliary
+/// `show_vec_<mangled>` fn ([`vec_show_aux`]) rather than trait dispatch (`Vec`'s coherence head
+/// admits only one instance per file — see [`vec_show_aux`]'s doc). `Float`/`Deferred`/a
+/// `Vec`-of-ineligible-element stay honest gaps (DN-138 §6).
 fn compose(ty_name: &str, field_types: &[String]) -> Result<String, GapReason> {
     if field_types.is_empty() {
         return Ok(format!(
@@ -128,16 +135,9 @@ fn compose(ty_name: &str, field_types: &[String]) -> Result<String, GapReason> {
                      WU-4's disclosed depth-1 scope)",
                     vec_element(ft).unwrap_or(ft)
                 )
-            } else if field_derive_kind(ft) == FieldDeriveKind::ScalarBinary {
-                format!(
-                    "a scalar WIDER than the seeded `Show` instance's `Binary{{64}}` (`{ft}`, e.g. \
-                     a `u128`/`i128` field) -- a NARROWING `width_cast` down to 64 bits can \
-                     overflow at runtime for a real wide value, so this leaf leaves it an honest \
-                     gap rather than compose a call that would `myc-check` clean but THROW at \
-                     eval time (post-landing review fix, DN-138 section 6's stated scope is \
-                     u8/u16/u32 only)"
-                )
             } else {
+                // Wide ScalarBinary now composes via opaque placeholder (ORACLE-R1 A5); residual
+                // ineligibility is Float / Deferred / other non-Show-routable shapes only.
                 "a primitive repr (or `Seq`/tuple/other bracketed shape) with no ambient `Show` \
                  instance in this file (`lib/std/fmt.myc`'s primitive impls live in a separate, \
                  unimported nodule)"
@@ -166,12 +166,112 @@ fn compose(ty_name: &str, field_types: &[String]) -> Result<String, GapReason> {
     let vars: Vec<String> = (0..field_types.len()).map(|i| format!("p{i}")).collect();
     let mut out = String::new();
     for (mangled, elem_ft) in &vec_aux {
-        out.push_str(&vec_show_aux(mangled, elem_ft));
-        out.push_str("\n\n");
+        if let Some(aux) = vec_show_aux(mangled, elem_ft) {
+            out.push_str(&aux);
+            out.push_str("\n\n");
+        }
     }
     out.push_str(&format!(
         "impl Show[{ty_name}] for {ty_name} {{\n  fn render(x: {ty_name}) => Bytes =\n    match x {{ {ty_name}({pats}) => {body} }};\n}};",
         pats = vars.join(", ")
+    ));
+    Ok(out)
+}
+
+/// **ONESHOT C2 / DN-128 §2 enum half** — structural `Show` over a sum type.
+///
+/// Composes `impl Show[T] for T { fn render(x: T) => Bytes = match x { … }; }`. Unit variants
+/// render as their constructor name string (`"Total"`, `"Exact_kw"`, … — the already-rewritten
+/// surface spelling). Payload variants fold `"V(" + render(fields) + ")"` via the same
+/// [`leaf_show_expr`] routing product structs use. Co-required with [`super::eq::compose_enum`]:
+/// a parent struct's `derive(Debug)` over an enum field emits `render(field)`, which needs this
+/// instance or the whole file stays myc-check-poisoned after `eq_*` alone lands (VR-5: eq without
+/// Show is half a residual close).
+pub(crate) fn compose_enum(
+    ty_name: &str,
+    variants: &[EnumVariantSpec<'_>],
+) -> Result<String, GapReason> {
+    if variants.is_empty() {
+        return Err(GapReason::new(
+            Category::DeriveAttr,
+            format!(
+                "enum `{ty_name}` derive(Debug): empty enum — no structural render is defined \
+                 over a zero-variant sum (G2)"
+            ),
+        ));
+    }
+    let mut vec_aux: BTreeMap<String, String> = BTreeMap::new();
+    let mut arms: Vec<String> = Vec::with_capacity(variants.len());
+    for (vi, v) in variants.iter().enumerate() {
+        if v.field_types.is_empty() {
+            arms.push(format!("{} => \"{}\"", v.name, v.name));
+            continue;
+        }
+        let mut exprs: Vec<String> = Vec::with_capacity(v.field_types.len());
+        for (fi, ft) in v.field_types.iter().enumerate() {
+            let pv = format!("p{fi}");
+            let expr = if field_derive_kind(ft) == FieldDeriveKind::VecOf {
+                let elem = vec_element(ft).expect("VecOf implies vec_element(ft).is_some()");
+                leaf_show_expr("_unused", elem).map(|_| {
+                    vec_aux
+                        .entry(mangle_ty(elem))
+                        .or_insert_with(|| elem.to_owned());
+                    format!("show_vec_{}({pv})", mangle_ty(elem))
+                })
+            } else {
+                leaf_show_expr(&pv, ft)
+            };
+            let Some(expr) = expr else {
+                let why = if field_derive_kind(ft) == FieldDeriveKind::VecOf {
+                    format!(
+                        "a `Vec` field whose element type `{}` has no `Show` route of its own \
+                         (DN-138 WU-4 depth-1 scope)",
+                        vec_element(ft).unwrap_or(ft)
+                    )
+                } else {
+                    "a primitive repr (or `Seq`/tuple/other bracketed shape) with no ambient \
+                     `Show` instance in this file"
+                        .to_owned()
+                };
+                return Err(GapReason::new(
+                    Category::DeriveAttr,
+                    format!(
+                        "enum `{ty_name}` derive(Debug): variant {vi} (`{}`) field {fi} has type \
+                         `{ft}`, {why} — the whole derive is left an honest gap rather than a \
+                         partial/fabricated render (G2)",
+                        v.name
+                    ),
+                ));
+            };
+            exprs.push(expr);
+        }
+        let mut parts = vec![format!("\"{}(\"", v.name)];
+        for (i, expr) in exprs.iter().enumerate() {
+            if i > 0 {
+                parts.push("\", \"".to_string());
+            }
+            parts.push(expr.clone());
+        }
+        parts.push("\")\"".to_string());
+        let body = bytes_concat_chain(&parts);
+        let pats: Vec<String> = (0..v.field_types.len()).map(|i| format!("p{i}")).collect();
+        arms.push(format!(
+            "{vn}({pats}) => {body}",
+            vn = v.name,
+            pats = pats.join(", "),
+        ));
+    }
+    let mut out = String::new();
+    for (mangled, elem_ft) in &vec_aux {
+        if let Some(aux) = vec_show_aux(mangled, elem_ft) {
+            out.push_str(&aux);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str(&format!(
+        "impl Show[{ty_name}] for {ty_name} {{\n  fn render(x: {ty_name}) => Bytes =\n    match x \
+         {{ {} }};\n}};",
+        arms.join(", ")
     ));
     Ok(out)
 }

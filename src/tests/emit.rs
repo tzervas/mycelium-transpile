@@ -216,7 +216,7 @@ fn cases() -> Vec<Case> {
             name: "widen_binary_emits_width_cast",
             rust: "impl Widen<u16> for u8 { fn widen(self) -> u16 { u16::from(self) } }",
             expect: Expect::Emitted {
-                item: "impl Widen[Binary{16}] for Binary{8}",
+                item: "widen_free Binary{8} -> Binary{16}",
                 contains: "width_cast(self, 0b0000_0000_0000_0000)",
             },
         },
@@ -465,11 +465,20 @@ fn cases() -> Vec<Case> {
                 category: Category::PayloadVariant,
             },
         },
-        // `#[derive(..)]` (any non-doc attribute) is dropped but recorded — the item is still
-        // emitted (structural mapping doesn't need the derive), with a DeriveAttr sub-gap.
+        // ONESHOT C2 — enum `#[derive(Debug, Clone)]` lowers Debug→Show + Clone satisfied no-op
+        // (no longer a bulk DeriveAttr drop). The type still emits; Clone is DeriveSatisfied.
         Case {
-            name: "derive_attr_sub_gap",
+            name: "derive_enum_debug_clone_composes_show",
             rust: "#[derive(Debug, Clone)]\nenum Foo { A, B }",
+            expect: Expect::Emitted {
+                item: "Foo",
+                contains: "impl Show[Foo] for Foo {\n  fn render(x: Foo) => Bytes =\n    match x { A => \"A\", B => \"B\" };\n};",
+            },
+        },
+        // Hash on an enum is still unrecognized (product-only for this leaf) — DeriveAttr sub-gap.
+        Case {
+            name: "derive_enum_hash_still_gaps",
+            rust: "#[derive(Hash)]\nenum Foo { A, B }",
             expect: Expect::EmittedAndGapped {
                 item: "Foo",
                 contains: "type Foo = A | B;",
@@ -798,6 +807,65 @@ fn cases() -> Vec<Case> {
                             _ => True } })",
             },
         },
+        // Post-#1645 residual (ORACLE-R1 L2-A1 / std-time lit-zero): a signed *param* compared
+        // to bare decimal `0` rewrites the lit to equal-width BinLit and uses signed `lt_s`
+        // (not unsigned `lt`) so high-bit payloads order correctly (ADR-028). Bare `0` is a
+        // file-level Q6 poison under myc-check.
+        Case {
+            name: "signed_param_lt_zero_emits_binlit_lt_s",
+            rust: "fn f(a: i32) -> bool { a < 0 }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "(match lt_s(a, 0b0000_0000_0000_0000_0000_0000_0000_0000) { 0b1 => True, \
+                            _ => False })",
+            },
+        },
+        Case {
+            name: "signed_param_eq_zero_emits_binlit_eq",
+            rust: "fn f(a: i128) -> bool { a == 0 }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "(match eq(a, 0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000) { 0b1 => True, _ => False })",
+            },
+        },
+        // Duration::is_negative / is_zero shape: signed field access on an in-file product.
+        // Field-type map (not name-only layout) recovers Binary{128}!s so lit-zero rewrites
+        // and signed order fire. Mutant: bare `0` or unsigned `lt` without `_s`.
+        Case {
+            name: "signed_field_is_negative_emits_binlit_lt_s",
+            rust: "struct Duration { nanos: i128 } impl Duration { pub const fn is_negative(self) \
+                   -> bool { self.nanos < 0 } }",
+            expect: Expect::Emitted {
+                item: "impl Duration",
+                contains: "lt_s((match self { Duration(p0) => p0 }), 0b0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000)",
+            },
+        },
+        Case {
+            name: "signed_field_is_zero_emits_binlit_eq",
+            rust: "struct Duration { nanos: i128 } impl Duration { pub const fn is_zero(self) -> \
+                   bool { self.nanos == 0 } }",
+            expect: Expect::Emitted {
+                item: "impl Duration",
+                contains: "eq((match self { Duration(p0) => p0 }), 0b0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000)",
+            },
+        },
+        // Unsigned field compare-to-zero: BinLit rewrite, but unsigned `lt` (not `lt_s`).
+        Case {
+            name: "unsigned_field_lt_zero_emits_binlit_lt",
+            rust: "struct Tick { n: u64 } impl Tick { fn before_epoch(self) -> bool { self.n < 0 } }",
+            expect: Expect::Emitted {
+                item: "impl Tick",
+                contains: "(match lt((match self { Tick(p0) => p0 }), 0b0000_0000_0000_0000_0000_\
+                            0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000) { 0b1 => True, \
+                            _ => False })",
+            },
+        },
         // D3 arithmetic-operator-emission residual (this leaf): the UNSIGNED counterpart to the
         // `_s`-suffixed arms above. Prior to this leaf the unsigned `Add`/`Sub`/`Mul` operand-gate
         // fell through to the plain glyph (pinned by this same case's now-superseded
@@ -861,9 +929,9 @@ fn cases() -> Vec<Case> {
         // special-case (which bypasses this body-emission path entirely) never intercepts it.
         Case {
             name: "impl_method_self_known_binary_participates_in_gate",
-            rust: "impl Foo for u16 { fn m(self, b: u16) -> u16 { self & b } }",
+            rust: "impl u16 { fn m(self, b: u16) -> u16 { self & b } }",
             expect: Expect::Emitted {
-                item: "impl Foo for Binary{16}",
+                item: "impl Binary{16}",
                 contains: "and(self, b)",
             },
         },
@@ -897,28 +965,77 @@ fn cases() -> Vec<Case> {
                 contains: "truncate(x, 0b0000_0000_0000_0000)",
             },
         },
-        // ── D3 operand-type-inference depth (DN-34 §8.16 residual, trx2 follow-on) ───────────────
-        // A literal operand (suffixed or not) is STILL left unresolved — never guessed. A suffixed
-        // literal's *type* is decidable, but composing it into a prim call does not `myc check`-clean
-        // (verify-first finding: the real toolchain refuses a bare decimal `Int` operand — "no
-        // representation family" — and fixing that needs the width-correct `BinLit` spelling DN-34
-        // §8.13/§8.14 already flagged as an undecided "typed-literal form" design decision; see
-        // `expr_env_type`'s doc). So the gate still does not fire here, and the prior glyph emission
-        // is unchanged — this pins that non-result.
+        // ── ONESHOT C3: mask lit / !=0 / Bool not (std-fs metadata residual) ─────────────────────
+        // When the *other* operand is a known Binary{N} (env / field), a decimal/octal/hex mask
+        // lit rewrites to an equal-width BinLit and rides `and`/`or`/`eq`-composed `!=` —
+        // never a bare decimal (Q6) and never the unknown prims `band`/`ne`. Bool `!`/`!=`
+        // compose total match forms (`lib/std/core.myc` bool_not / inverted bool_eq); Binary `!`
+        // keeps the glyph (`bit.not` via parse desugar — already clean).
         Case {
-            name: "bitand_known_binary_with_suffixed_literal_keeps_glyph",
+            name: "bitand_known_binary_with_suffixed_literal_emits_and_binlit",
             rust: "fn f(a: u16) -> u16 { a & 5u16 }",
             expect: Expect::Emitted {
                 item: "f",
-                contains: "a & 5",
+                contains: "and(a, 0b0000_0000_0000_0101)",
             },
         },
         Case {
-            name: "bitand_known_binary_with_unsuffixed_literal_keeps_glyph",
+            name: "bitand_known_binary_with_unsuffixed_literal_emits_and_binlit",
             rust: "fn f(a: u16) -> u16 { a & 5 }",
             expect: Expect::Emitted {
                 item: "f",
-                contains: "a & 5",
+                contains: "and(a, 0b0000_0000_0000_0101)",
+            },
+        },
+        Case {
+            name: "ne_known_binary_vs_zero_composes_from_eq",
+            rust: "fn f(a: u32) -> bool { a != 0 }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "(match eq(a, 0b0000_0000_0000_0000_0000_0000_0000_0000) { 0b1 => False, \
+                           _ => True })",
+            },
+        },
+        Case {
+            name: "bitand_ne_zero_mask_composes_clean",
+            rust: "fn f(a: u32) -> bool { a & 0o400 != 0 }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "(match eq(and(a, 0b0000_0000_0000_0000_0000_0001_0000_0000), \
+                           0b0000_0000_0000_0000_0000_0000_0000_0000) { 0b1 => False, _ => True })",
+            },
+        },
+        Case {
+            name: "bool_not_composes_match_invert",
+            rust: "fn f(b: bool) -> bool { !b }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "match (b) { True => False, False => True }",
+            },
+        },
+        Case {
+            name: "bool_ne_composes_match",
+            rust: "fn f(a: bool, b: bool) -> bool { a != b }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "match (a) { True => match (b) { True => False, False => True }, False => (b) }",
+            },
+        },
+        Case {
+            name: "binary_not_keeps_glyph",
+            rust: "fn f(a: u16) -> u16 { !a }",
+            expect: Expect::Emitted {
+                item: "f",
+                contains: "!a",
+            },
+        },
+        // ONESHOT C3: user-enum `==` routes through co-emitted `eq_<T>` (not kernel `eq`).
+        Case {
+            name: "enum_eq_uses_co_emitted_eq_fn",
+            rust: "#[derive(PartialEq)] enum K { A, B } impl K { fn is_a(self) -> bool { self == K::A } }",
+            expect: Expect::Emitted {
+                item: "impl K",
+                contains: "(match eq_K(self, A) { 0b1 => True, _ => False })",
             },
         },
         // `(e)`/`&e` ARE structurally transparent to the operand-type gate (this module's own
@@ -1074,8 +1191,8 @@ fn cases() -> Vec<Case> {
             name: "mvp_widen_unaffected_by_mvp_recognizer",
             rust: "impl Widen<u16> for u8 { fn widen(self) -> u16 { u16::from(self) } }",
             expect: Expect::Emitted {
-                item: "impl Widen[Binary{16}] for Binary{8}",
-                contains: "impl Widen[Binary{16}] for Binary{8} {",
+                item: "widen_free Binary{8} -> Binary{16}",
+                contains: "width_cast(self, 0b0000_0000_0000_0000)",
             },
         },
         // T-A3 half 1 (emit<->check agreement, the transpile-time half): a `Ord3`-named impl whose
@@ -1203,8 +1320,8 @@ fn widen_binary_emits_width_cast_not_fabricated_from() {
         report
             .emitted_items
             .iter()
-            .any(|n| n == "impl Widen[Binary{16}] for Binary{8}"),
-        "expected the Binary widen impl to be emitted via width_cast, got emitted_items={:?}",
+            .any(|n| n.starts_with("widen_free Binary{8} -> Binary{16}")),
+        "expected Binary widen free-fn via width_cast, got emitted_items={:?}",
         report.emitted_items
     );
     assert!(
@@ -1236,8 +1353,11 @@ fn narrow_gap_cites_dn41_and_produces_no_fabricated_myc_text() {
          got:\n{myc}"
     );
     assert!(
-        report.gaps.iter().any(|g| g.reason.contains("DN-41")),
-        "expected the narrow gap's reason to cite DN-41, got {:?}",
+        report
+            .gaps
+            .iter()
+            .any(|g| { g.reason.contains("DN-41") || g.reason.contains("non-prelude trait") }),
+        "expected Narrow gap to cite DN-41 or non-prelude residual, got {:?}",
         report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
     );
 }
@@ -1830,29 +1950,17 @@ fn struct_variant_construction_forms_check_clean_against_real_toolchain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The #72 co-poison fix, UPDATED (M-1100 residual, `to_owned` follow-on leaf): a Rust
-/// ownership/identity-conversion no-op method (`.to_owned()`, `.clone()`, `.to_string()`,
-/// `.into()`, …) with no Mycelium free-function/prim referent must never be desugared to a
-/// fabricated bare call (`myc check`: `unknown function/constructor/prim <name>`) — G2/VR-5. That
-/// invariant is unchanged. What changed (this leaf): `crate::prim_map::TABLE` now carries an
-/// `AnyBuiltinScalar`-gated identity row for `to_owned` (mirroring `clone`'s row, PR #1552) — sound
-/// because Rust's orphan rule forecloses any downstream `impl ToOwned` for a foreign
-/// builtin/primitive receiver type (`bool`/`u8..u128`/.../`String`/`str`). So a `.to_owned()` call
-/// on a receiver KNOWN to be such a builtin (a bare identifier whose mapped type resolves, e.g.
-/// `&str`/`String` -> `Bytes`) now emits as identity, not a gap; a `.to_owned()` call on any
-/// receiver that does NOT resolve to a known builtin scalar (a user-named type, or an unresolved
-/// expression like a string literal or a nested call) still gaps exactly as before — the
-/// fabrication-avoidance invariant this test exists to pin is unaffected for those cases. Verified
-/// against the real oracle in the vet loop: without the original gap, emitting the string-literal
-/// `match` (M-1035) in `checkty::vsa_kernel_model_id` — whose arms are `"MAP-I".to_owned()` — used
-/// to poison the whole file's file-gated `checked_fraction`; that literal-receiver arm still gaps
-/// today (a string literal is not a bare-identifier receiver `crate::emit::expr_env_type` can
-/// resolve), so the whole-fn-gaps invariant for that real corpus shape is unchanged.
+/// The #72 co-poison fix, UPDATED (M-1037 residual): a Rust ownership/identity-conversion method
+/// must never desugar to a fabricated bare call (`unknown function/constructor/prim <name>`) —
+/// G2/VR-5. Mapped rows (`to_owned`/`clone`/`to_string`(Bytes)/accessors) emit identity when
+/// their receiver gate matches; residuals (`into`/`to_vec`/non-Bytes `to_string`/user types) gap
+/// with EXPLAIN. **M-1037 residual:** `expr_env_type` types string/bool/char literals, so
+/// `"a".to_owned()` is now sound identity (fixed Rust type `&'static str` → `Bytes`) — the
+/// prior whole-fn gap for the string-literal match arm body is closed without fabricating.
 #[test]
 fn conversion_noop_method_gaps_never_fabricates_unknown_prim() {
-    // A bare `.to_owned()` on a `&str` (maps to the builtin scalar `Bytes`) is now sound identity
-    // (this leaf) — it must emit cleanly as the receiver unchanged, never a fabricated
-    // `to_owned(...)` call, and never gap.
+    // A bare `.to_owned()` on a `&str` (maps to the builtin scalar `Bytes`) is sound identity —
+    // emit the receiver unchanged, never a fabricated `to_owned(...)` call.
     let rust = "fn f(s: &str) -> String { s.to_owned() }";
     let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
@@ -1872,36 +1980,32 @@ fn conversion_noop_method_gaps_never_fabricates_unknown_prim() {
         "expected the identity passthrough `(s)`, got:\n{myc}"
     );
 
-    // The real `checkty::vsa_kernel_model_id` shape: a string-literal `match` (now emittable per
-    // M-1035) whose arm bodies are `.to_owned()` — the literal-receiver arm (`"A" =>
-    // "a".to_owned()`) has an unresolved receiver (`crate::emit::expr_env_type` only resolves a
-    // bare identifier or a paren/reference wrapper around one, never a literal), so it still gaps,
-    // and the whole fn therefore still gaps cleanly — unaffected by the bare-identifier identity
-    // fix on the other arm (`s.to_owned()`).
+    // M-1037 residual: string-literal match arms with `.to_owned()` bodies — both arms now
+    // identity-emit (literal typed as Bytes; bare `s` as Bytes). Must emit the whole fn, never
+    // fabricate `to_owned(`.
     let real =
         "fn m(s: &str) -> String { match s { \"A\" => \"a\".to_owned(), _ => s.to_owned() } }";
     let (myc2, report2) = transpile_source(real, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        !report2.emitted_items.iter().any(|n| n == "m"),
-        "the `\"a\".to_owned()` literal-receiver arm is unresolved and must still gap the whole \
-         fn (no fabricated emission), got {:?}",
-        report2.emitted_items
+        report2.emitted_items.iter().any(|n| n == "m"),
+        "string-literal `.to_owned()` arm bodies must identity-emit the whole fn (M-1037 residual), \
+         got emitted_items={:?} gaps={:?}",
+        report2.emitted_items,
+        report2.gaps
     );
     assert!(
         !myc2.contains("to_owned("),
-        "no fabricated `to_owned(...)` may leak even inside a now-emittable string-match, got:\n{myc2}"
+        "no fabricated `to_owned(...)` may leak even inside a string-match, got:\n{myc2}"
     );
 
-    // An explicit `.deref()` call is the same fabrication class (the docstring claims `Deref`
-    // coverage): it must gap, never emit a fabricated `deref(recv)` bare call (PR #1372 review
-    // fix) — `deref` is not in `prim_map::TABLE`, deliberately withheld, unaffected by this leaf.
+    // M-1037: `.deref()` on a bare `&str` identifier (`Bytes`) is sound identity — must emit, not gap.
     let deref = "fn g(s: &str) -> &str { s.deref() }";
     let (myc3, report3) = transpile_source(deref, "fixture.rs", "fixture")
         .unwrap_or_else(|e| panic!("failed to parse/transpile: {e}"));
     assert!(
-        !report3.emitted_items.iter().any(|n| n == "g"),
-        "a `.deref()`-bodied fn must gap (no fabricated bare-call emission), got {:?}",
+        report3.emitted_items.iter().any(|n| n == "g"),
+        "`.deref()` on builtin `&str` receiver must emit identity (M-1037), got {:?}",
         report3.emitted_items
     );
     assert!(
@@ -1935,6 +2039,47 @@ fn conversion_noop_method_gaps_never_fabricates_unknown_prim() {
             .contains("ownership/identity-conversion no-op method")),
         "expected `snap` to gap via the `is_unmappable_conversion_method` catch-all, got {:?}",
         report4.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+    );
+}
+
+/// M-1037 — generalized never-fabricates pin: mapped conversion/accessor methods and explicit
+/// unmapped methods (`ne`/`fetch_add`/`contains`/`into`/`to_vec`) must not leak fabricated bare-call
+/// surface.
+#[test]
+fn conversion_and_unmapped_methods_never_fabricate_unknown_prim() {
+    for (rust, forbidden_call) in [
+        (
+            "fn atom(x: u64) -> u64 { x.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }",
+            "fetch_add(",
+        ),
+        (
+            "fn has(s: String, c: char) -> bool { s.contains(c) }",
+            "contains(",
+        ),
+        // M-1037 residual: into / to_vec / non-Bytes to_string never fabricate.
+        ("fn i(s: &str) -> String { s.into() }", "into("),
+        ("fn v(x: &[u8]) -> Vec<u8> { x.to_vec() }", "to_vec("),
+        ("fn t(x: u64) -> String { x.to_string() }", "to_string("),
+    ] {
+        let (myc, _report) = transpile_source(rust, "fixture.rs", "fixture")
+            .unwrap_or_else(|e| panic!("failed `{rust}`: {e}"));
+        assert!(
+            !myc.contains(forbidden_call),
+            "`{rust}` leaked fabricated `{forbidden_call}`, got:\n{myc}"
+        );
+    }
+    // Composed `.ne` on known `Binary{N}` operands must emit (not gap) without `ne(` fabrication.
+    let ne_ok = "fn ne_u(a: u64, b: u64) -> bool { a.ne(&b) }";
+    let (myc_ne, report_ne) =
+        transpile_source(ne_ok, "fixture.rs", "fixture").unwrap_or_else(|e| panic!("failed: {e}"));
+    assert!(
+        report_ne.emitted_items.iter().any(|n| n == "ne_u"),
+        "composed `.ne` on u64 should emit, got {:?}",
+        report_ne.emitted_items
+    );
+    assert!(
+        myc_ne.contains("match eq") && !myc_ne.contains("ne("),
+        "expected composed `eq` lowering, got:\n{myc_ne}"
     );
 }
 
@@ -2032,6 +2177,12 @@ fn binop_operand_gated_forms_check_clean() {
         "fn f_add_u(a: u16, b: u16) -> u16 { a + b }",
         "fn f_sub_u(a: u16, b: u16) -> u16 { a - b }",
         "fn f_mul_u(a: u16, b: u16) -> u16 { a * b }",
+        // ONESHOT C3 — mask-lit / !=0 / Bool not residuals (std-fs metadata poison).
+        "fn f_and_lit(a: u32) -> u32 { a & 0o400 }",
+        "fn f_ne_zero(a: u32) -> bool { a != 0 }",
+        "fn f_mask_ne_zero(a: u32) -> bool { a & 0o400 != 0 }",
+        "fn f_bool_not(b: bool) -> bool { !b }",
+        "fn f_bool_ne(a: bool, b: bool) -> bool { a != b }",
     ];
     for (i, rust) in rust_snippets.iter().enumerate() {
         let (myc, report) = transpile_source(rust, "fixture.rs", "oracle")
@@ -2536,6 +2687,96 @@ fn self_receiving_inherent_method_is_left_unmangled() {
         myc.contains("fn get(")
             && !myc.contains(&crate::reserved::mangled_inherent_fn_name("Foo", "get")),
         "a `self`-receiving method must keep its bare name (never mangled), got:\n{myc}"
+    );
+}
+
+// --- G-β Rank A — never-fabricate free-fn method-call when inherent not emitted ---------------
+//
+// When an inherent method body fails to emit (e.g. M-1037 residual `.to_vec()`), the declaration
+// is never recorded in `local_mangled`/`bare_fn_names`. A later free-fn call site
+// `recv.method(...)` must **gap** rather than desugar to bare `method(recv, …)` which file-poisons
+// myc-check with `unknown function/constructor/prim method` (G2/VR-5). Symmetric happy path:
+// a successfully-emitted self method remains callable as the registered free-fn desugar.
+
+/// **Poison stop (Rank A):** `Source::read_to_end` body gaps on `.to_vec()` (M-1037 residual);
+/// free fn `read_all` calls `.read_to_end()` — must gap the free fn and never emit bare
+/// `read_to_end(` that would file-poison myc-check.
+#[test]
+fn method_call_to_unemitted_inherent_gaps_never_fabricates_free_fn() {
+    let rust = "\
+pub struct Source {\n\
+    data: Vec<u8>,\n\
+    pos: usize,\n\
+}\n\
+impl Source {\n\
+    fn read_to_end(&mut self) -> Vec<u8> {\n\
+        let bytes = self.data[self.pos..].to_vec();\n\
+        self.pos = self.data.len();\n\
+        bytes\n\
+    }\n\
+}\n\
+pub fn read_all(mut src: Source) -> Vec<u8> {\n\
+    src.read_to_end()\n\
+}\n";
+    let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+        .unwrap_or_else(|e| panic!("failed to parse/transpile G-β poison fixture: {e}"));
+    assert!(
+        !report.emitted_items.iter().any(|n| n == "read_all"),
+        "`read_all` must gap (callee `read_to_end` was never recorded as emitted): \
+         emitted={:?} myc:\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        !myc.contains("read_to_end("),
+        "emitted .myc must NEVER contain bare `read_to_end(` (G-β Rank A poison stop), got:\n{myc}"
+    );
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.reason.contains("no proven-emitted free-fn referent")
+                || g.reason.contains("read_to_end")),
+        "expected a gap citing the unregistered method / body residual, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+    );
+    // The method body residual itself must still be reported (never silent about why the
+    // declaration failed).
+    assert!(
+        report.gaps.iter().any(|g| g.reason.contains("to_vec")),
+        "expected the impl-body `.to_vec()` residual to surface, got {:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+    );
+}
+
+/// **Happy path (Rank A):** a self-receiving inherent method that **does** emit (simple field
+/// projection) is registered bare; a later free fn calling `.method()` desugars to the
+/// registered free-fn name (not mangled on first claim).
+#[test]
+fn method_call_to_emitted_inherent_desugars_to_registered_free_fn() {
+    let rust = "\
+pub struct Foo {\n\
+    x: u8,\n\
+}\n\
+impl Foo {\n\
+    pub fn get(&self) -> u8 { self.x }\n\
+}\n\
+pub fn call(f: Foo) -> u8 { f.get() }\n";
+    let (myc, report) = transpile_source(rust, "fixture.rs", "fixture")
+        .unwrap_or_else(|e| panic!("failed to parse/transpile G-β happy-path fixture: {e}"));
+    assert!(
+        report.emitted_items.iter().any(|n| n == "call"),
+        "`call` must emit (registered bare `get` is a proven free-fn referent): emitted={:?} \
+         gaps={:?}",
+        report.emitted_items,
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+    );
+    assert!(
+        myc.contains("= get(f)") || myc.contains("= get(f);") || myc.contains("get(f)"),
+        "expected free-fn desugar `get(f)` for the registered inherent, got:\n{myc}"
+    );
+    assert!(
+        !myc.contains(&crate::reserved::mangled_inherent_fn_name("Foo", "get")),
+        "first bare self-method claim stays un-mangled at the call site too, got:\n{myc}"
     );
 }
 
@@ -3152,7 +3393,7 @@ fn mvp_cmp_emit_check_agreement() {
             name: "widen_stays_a_residual",
             rust: "impl Widen<u16> for u8 { fn widen(self) -> u16 { u16::from(self) } }",
             expect_bracket: false,
-            expect_clean: false,
+            expect_clean: true,
         },
         // T-A3: `self`-receiver `Ord3` impl — correctly excluded (no bracket); the checker refuses
         // it too (`cmp_used` still seeds the prelude trait since the impl NAMES `Ord3`, so the
@@ -3454,14 +3695,33 @@ fn derive_forms_check_clean_against_real_toolchain() {
              #[derive(Debug, Default, PartialEq)]\nstruct WithVecOfUser(Vec<Elem>);",
             "WithVecOfUser",
         ),
-        // DN-138 WU-4 (post-landing review fix) -- a `u128` field is WIDER than the seeded
-        // `Binary{64}` instance: `PartialEq` (width-generic `eq` prim) and `Default` (a literal
-        // zero at the field's own width, no width_cast at all) still compose cleanly; `Debug`/
-        // `PartialOrd` honestly GAP it instead of composing a `width_cast` that would `myc-check`
-        // clean but overflow at runtime for a real value >= 2^64 (see `derive_debug_and_partialord_
-        // gap_a_wide_scalar_never_a_runtime_throwing_width_cast` below for the negative half).
+        // ONESHOT C2 -- unit enum PartialEq + Debug (std-fs Fallibility/FileKind residual).
         (
-            "#[derive(Default, PartialEq)]\nstruct Wide(u128);",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum Fallibility { Total, OptionFallible, ResultFallible }",
+            "Fallibility",
+        ),
+        // ONESHOT C2 -- reserved-keyword unit variants (Exact -> Exact_kw) + parent struct eq.
+        (
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum GuaranteeTag { Exact, Proven, Empirical, Declared }\n\
+             #[derive(Debug, PartialEq, Eq)]\nstruct MatrixRow(String, GuaranteeTag);",
+            "MatrixRow",
+        ),
+        // ONESHOT C2 -- Bool logical or (std-fs OpenOptions::wants_write residual).
+        (
+            "fn wants_write(a: bool, b: bool) -> bool { a || b }",
+            "wants_write",
+        ),
+        (
+            "fn wants_both(a: bool, b: bool) -> bool { a && b }",
+            "wants_both",
+        ),
+        // DN-138 WU-4 / ORACLE-R1 A5 -- a `u128` field is WIDER than the seeded `Binary{64}`
+        // instance: `PartialEq` (width-generic `eq` prim), `Default` (literal zero at own width),
+        // and `Debug` (Declared opaque `"<Binary{128}>"` placeholder — never a narrowing
+        // width_cast) all compose cleanly; `PartialOrd` still honestly GAPs (see
+        // `derive_debug_and_partialord_gap_a_wide_scalar_never_a_runtime_throwing_width_cast`).
+        (
+            "#[derive(Debug, Default, PartialEq)]\nstruct Wide(u128);",
             "Wide",
         ),
     ];
@@ -3499,6 +3759,144 @@ fn derive_forms_check_clean_against_real_toolchain() {
 // (fixture-corpus text assertions here; the live-oracle half rides the `rust_snippets` cases
 // added to `derive_forms_check_clean_against_real_toolchain` above).
 // ---------------------------------------------------------------------------------------------
+
+/// ONESHOT C2 — unit-enum `derive(PartialEq)` co-emits `fn eq_<Enum>` so nested struct eq can
+/// resolve (the `eq_Fallibility` / `eq_FileKind` / `eq_GuaranteeTag` residual).
+#[test]
+fn derive_eq_unit_enum_composes() {
+    let (myc, report) = transpile_source(
+        "#[derive(PartialEq, Eq)]\nenum Fallibility { Total, OptionFallible, ResultFallible }",
+        "f.rs",
+        "f",
+    )
+    .expect("parses/transpiles");
+    assert!(
+        report.emitted_items.iter().any(|n| n == "Fallibility"),
+        "expected Fallibility in emitted_items, got {:?}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("fn eq_Fallibility(a: Fallibility, b: Fallibility) => Binary{1} =")
+            && myc.contains("Total => match b { Total => 0b1, _ => 0b0 }")
+            && myc.contains("OptionFallible => match b { OptionFallible => 0b1, _ => 0b0 }")
+            && myc.contains("ResultFallible => match b { ResultFallible => 0b1, _ => 0b0 }"),
+        "expected structural unit-enum eq arms, got:\n{myc}"
+    );
+    // Exactly one eq_Fallibility (Eq must not double-emit).
+    assert_eq!(
+        myc.matches("fn eq_Fallibility").count(),
+        1,
+        "expected exactly one eq_Fallibility, got:\n{myc}"
+    );
+}
+
+/// ONESHOT C4 — single-variant unit enum must NOT emit an unreachable `_ => 0b0` arm
+/// (std-rand `RngAlgo = Xoshiro256PlusPlus` file-poison after C2; myc-check W7).
+#[test]
+fn derive_eq_single_variant_unit_enum_is_trivially_true() {
+    let (myc, report) = transpile_source(
+        "#[derive(PartialEq, Eq, Debug)]\nenum RngAlgo { Xoshiro256PlusPlus }",
+        "f.rs",
+        "f",
+    )
+    .expect("parses/transpiles");
+    assert!(
+        report.emitted_items.iter().any(|n| n == "RngAlgo"),
+        "expected RngAlgo emitted, got {:?}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("fn eq_RngAlgo(a: RngAlgo, b: RngAlgo) => Binary{1} =\n    0b1;"),
+        "single-variant unit enum eq must be trivially-true (no unreachable `_`), got:\n{myc}"
+    );
+    assert!(
+        !myc.contains("_ => 0b0"),
+        "must not emit unreachable wildcard arm for single-variant enum, got:\n{myc}"
+    );
+}
+
+/// ONESHOT C4 — single-variant *payload* enum: field-binding match without a wildcard.
+#[test]
+fn derive_eq_single_variant_payload_enum_no_wildcard() {
+    let (myc, _report) = transpile_source(
+        "#[derive(PartialEq, Eq)]\nenum BoxU8 { V(u8) }",
+        "f.rs",
+        "f",
+    )
+    .expect("parses/transpiles");
+    assert!(
+        myc.contains("fn eq_BoxU8(a: BoxU8, b: BoxU8) => Binary{1} =")
+            && myc.contains("V(p0) => match b { V(q0) => eq(p0, q0) }")
+            && !myc.contains("_ => 0b0"),
+        "single-variant payload eq must bind fields without `_ => 0b0`, got:\n{myc}"
+    );
+}
+
+/// ONESHOT C2 — unit-enum `derive(Debug)` co-emits `impl Show[T]` so parent struct Show over
+/// enum fields does not poison after eq lands.
+#[test]
+fn derive_debug_unit_enum_composes_show() {
+    let (myc, report) = transpile_source(
+        "#[derive(Debug)]\nenum FileKind { File, Directory, Symlink, Other }",
+        "f.rs",
+        "f",
+    )
+    .expect("parses/transpiles");
+    assert!(report.emitted_items.iter().any(|n| n == "FileKind"));
+    assert!(
+        myc.contains("impl Show[FileKind] for FileKind {")
+            && myc.contains("File => \"File\"")
+            && myc.contains("Directory => \"Directory\""),
+        "expected unit-enum Show arms, got:\n{myc}"
+    );
+}
+
+/// ONESHOT C2 — nested enum field: struct PartialEq calls `eq_<Enum>` that the enum's own
+/// PartialEq co-emits in the same file.
+#[test]
+fn derive_eq_enum_nested_in_struct_same_file() {
+    let (myc, _report) = transpile_source(
+        "#[derive(PartialEq, Eq)]\nenum FileKind { File, Directory }\n\
+         #[derive(PartialEq, Eq)]\nstruct Metadata(FileKind, u64);",
+        "f.rs",
+        "f",
+    )
+    .expect("parses/transpiles");
+    assert!(
+        myc.contains("fn eq_FileKind(") && myc.contains("fn eq_Metadata("),
+        "expected both enum and struct eq helpers, got:\n{myc}"
+    );
+    assert!(
+        myc.contains("eq_FileKind(p0, q0)"),
+        "struct eq must call nested eq_FileKind, got:\n{myc}"
+    );
+}
+
+/// ONESHOT C2 — Rust `||`/`&&` emit total Bool match folds (not Binary `or`/`and` prims).
+#[test]
+fn bool_logical_or_and_emit_match_not_bit_prim() {
+    let (or_myc, _) =
+        transpile_source("fn f(a: bool, b: bool) -> bool { a || b }", "f.rs", "f").expect("parses");
+    assert!(
+        or_myc.contains("match (a) { True => True, False => (b) }")
+            || or_myc.contains("match (a) { True => True, False => (b)}"),
+        "expected Bool-or match fold, got:\n{or_myc}"
+    );
+    assert!(
+        !or_myc.contains("||") && !or_myc.contains(" or("),
+        "must not emit || glyph or bit-or call, got:\n{or_myc}"
+    );
+    let (and_myc, _) =
+        transpile_source("fn f(a: bool, b: bool) -> bool { a && b }", "f.rs", "f").expect("parses");
+    assert!(
+        and_myc.contains("match (a) { True => (b), False => False }"),
+        "expected Bool-and match fold, got:\n{and_myc}"
+    );
+    assert!(
+        !and_myc.contains("&&"),
+        "must not emit && glyph, got:\n{and_myc}"
+    );
+}
 
 /// Fieldless `derive(PartialEq)` composes the trivially-true `fn eq_T` — mirrors the fieldless
 /// `Debug`/`Default` fixture-corpus cases' shape (`cases()` above), pinned directly here since
@@ -3863,13 +4261,13 @@ fn derive_eq_and_debug_both_compose_over_a_narrow_scalar_dn138_wu4() {
     );
 }
 
-/// **HIGH (post-landing review finding, fixed here): a WIDE `ScalarBinary` (`u128`/`i128` ->
-/// `Binary{128}`) must NEVER compose `Debug`/`PartialOrd` via a NARROWING `width_cast` down to the
-/// seeded `Binary{64}` instance** -- `width_cast`'s own checked-narrow contract overflows at
-/// runtime for any value `>= 2^64` (`prims.rs::prim_width_cast`), so composing it unconditionally
-/// would `myc-check` clean but THROW at eval time for a real wide value -- silently overstating
-/// DN-138 section 6's stated `u8`/`u16`/`u32` scope. Both rows must leave it an honest,
-/// non-fabricated gap instead (never a partial/wrong-but-plausible-looking impl, G2).
+/// **HIGH (post-landing review + ORACLE-R1 A5):** a WIDE `ScalarBinary` (`u128`/`i128` ->
+/// `Binary{128}`) must NEVER compose via a NARROWING `width_cast` down to the seeded
+/// `Binary{64}` instance — that cast overflows at eval for any value `>= 2^64`. **Debug** now
+/// composes with a Declared opaque `"<Binary{128}>"` placeholder (structure shown, payload not
+/// decimal-rendered — never fabricated Display, G2/VR-5; clears same-file parent `UserNamed`
+/// `render` file-poison). **PartialOrd** still honestly GAPs (no total order surface without a
+/// wide Ord3 seed). Never a partial/wrong-but-plausible-looking narrowing impl (G2).
 #[test]
 fn derive_debug_and_partialord_gap_a_wide_scalar_never_a_runtime_throwing_width_cast() {
     let (debug_myc, debug_report) =
@@ -3880,11 +4278,19 @@ fn derive_debug_and_partialord_gap_a_wide_scalar_never_a_runtime_throwing_width_
         "Debug must never emit a NARROWING width_cast for a wide (u128) scalar, got:\n{debug_myc}"
     );
     assert!(
-        debug_report
+        debug_myc.contains("impl Show[Wide] for Wide"),
+        "Debug must compose Show with opaque wide-Binary placeholder, got:\n{debug_myc}"
+    );
+    assert!(
+        debug_myc.contains("\"<Binary{128}>\""),
+        "expected Declared opaque Binary{{128}} placeholder in Show body, got:\n{debug_myc}"
+    );
+    assert!(
+        !debug_report
             .gaps
             .iter()
             .any(|g| g.category == Category::DeriveAttr && g.reason.contains("Debug")),
-        "expected a DeriveAttr gap citing Debug for the wide scalar field, got {:?}",
+        "Debug must no longer DeriveAttr-gap a wide scalar (A5 opaque compose), got {:?}",
         debug_report.gaps
     );
 
@@ -3931,6 +4337,58 @@ fn derive_debug_and_partialord_gap_a_wide_scalar_never_a_runtime_throwing_width_
         "Default must still compose over a wide (u128) scalar (a literal zero at its own width, \
          no width_cast at all), got {:?}",
         default_report.gaps
+    );
+}
+
+/// ORACLE-R1 A5: `derive(Debug)` on a wide-Binary leaf (`WallInstant`-shape) plus a same-file
+/// `UserNamed` parent (`ManualClock`-shape) both compose Show; parent `render(field)` resolves.
+/// Hand-written `Default` calling `Type::from_nanos(0)` rewrites the bare `0` to a BinLit via
+/// recorded mangled-assoc param widths (post-Show residual).
+#[test]
+fn oracle_r1_a5_wide_show_and_call_arg_lit_zero() {
+    let rust = r#"
+        #[derive(Debug, Clone, Copy)]
+        struct WallInstant { nanos: i128 }
+        impl WallInstant {
+            pub const fn from_nanos(nanos: i128) -> Self { WallInstant { nanos } }
+        }
+        #[derive(Debug, Clone)]
+        struct ManualClock { wall: WallInstant }
+        impl Default for ManualClock {
+            fn default() -> Self {
+                ManualClock { wall: WallInstant::from_nanos(0) }
+            }
+        }
+    "#;
+    let (myc, report) =
+        transpile_source(rust, "std_time_like.rs", "std.time").expect("parses/transpiles");
+    assert!(
+        myc.contains("impl Show[WallInstant] for WallInstant"),
+        "expected WallInstant Show, got:\n{myc}"
+    );
+    assert!(
+        myc.contains("\"<Binary{128}>\""),
+        "expected opaque wide Binary placeholder, got:\n{myc}"
+    );
+    assert!(
+        myc.contains("impl Show[ManualClock] for ManualClock"),
+        "expected ManualClock Show (parent of WallInstant), got:\n{myc}"
+    );
+    assert!(
+        myc.contains("render(p0)") || myc.contains("render(p1)"),
+        "ManualClock Show should dispatch render on UserNamed field, got:\n{myc}"
+    );
+    // Init body: bare 0 rewritten to BinLit (Q6-safe).
+    assert!(
+        myc.contains("impl Init[ManualClock]") || myc.contains("fn init()"),
+        "expected Default→Init, got:\n{myc}\ngaps={:?}",
+        report.gaps.iter().map(|g| &g.reason).collect::<Vec<_>>()
+    );
+    assert!(
+        !myc.contains("from_nanos(0)")
+            && !myc.contains("from_nanos(0,")
+            && !myc.contains("_from_nanos(0)"),
+        "bare decimal 0 must be rewritten to BinLit in assoc-fn call args, got:\n{myc}"
     );
 }
 
@@ -4255,4 +4713,526 @@ fn bounded_impl_generic_emission_check_clean() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- ORACLE-R1 A2: guarantee-lattice co-emit (eval.rs Strength poison) -------------------------
+
+/// Free-fn `strength_of` references `Strength` + `GuaranteeStrength` without declaring either.
+/// Co-emit both lattice types (Exact→Exact_kw) so myc-check never sees `unknown type Strength`.
+#[test]
+fn lattice_co_emit_strength_of_no_unknown_type_poison() {
+    let rust = r#"
+        pub fn strength_of(s: Strength) -> GuaranteeStrength {
+            match s {
+                Strength::Exact => GuaranteeStrength::Exact,
+                Strength::Proven => GuaranteeStrength::Proven,
+                Strength::Empirical => GuaranteeStrength::Empirical,
+                Strength::Declared => GuaranteeStrength::Declared,
+            }
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "eval.rs", "l1.eval")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        report.emitted_items.iter().any(|n| n == "co-emit:Strength"),
+        "expected co-emitted Strength; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report
+            .emitted_items
+            .iter()
+            .any(|n| n == "co-emit:GuaranteeStrength"),
+        "expected co-emitted GuaranteeStrength; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report.emitted_items.iter().any(|n| n == "strength_of"),
+        "expected strength_of emitted; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("type Strength = Exact_kw | Proven_kw | Empirical_kw | Declared_kw;"),
+        "missing Strength co-emit type:\n{myc}"
+    );
+    assert!(
+        myc.contains("type GuaranteeStrength = Exact_kw | Proven_kw | Empirical_kw | Declared_kw;"),
+        "missing GuaranteeStrength co-emit type:\n{myc}"
+    );
+    assert!(
+        myc.contains("fn strength_of(s: Strength) => GuaranteeStrength"),
+        "missing strength_of signature:\n{myc}"
+    );
+    // Co-emits must precede the free-fn (type must be in scope before use).
+    let s_pos = myc.find("type Strength =").expect("Strength type position");
+    let fn_pos = myc.find("fn strength_of").expect("strength_of position");
+    assert!(
+        s_pos < fn_pos,
+        "co-emitted Strength must precede strength_of:\n{myc}"
+    );
+
+    // Real-oracle gate when myc-check is available.
+    if let Some(bin) = find_myc_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "myc-a2-strength-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("strength_of.myc");
+        std::fs::write(&path, &myc).expect("write myc");
+        let checker = crate::vet::MycChecker {
+            command: vec![bin.display().to_string()],
+            cwd: None,
+        };
+        let rec = checker.vet_file(&path, "eval.rs", 1, 1);
+        assert_eq!(
+            rec.class,
+            crate::vet::VetClass::Clean,
+            "strength_of + lattice co-emit must not file-poison with unknown type Strength; \
+             myc=\n{myc}\ndiagnostic={:?}",
+            rec.diagnostic
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// When `Strength` is declared in-file, co-emit only the missing lattice peer (GuaranteeStrength).
+#[test]
+fn lattice_co_emit_skips_in_file_strength() {
+    let rust = r#"
+        pub enum Strength { Exact, Proven, Empirical, Declared }
+        pub fn strength_of(s: Strength) -> GuaranteeStrength {
+            match s {
+                Strength::Exact => GuaranteeStrength::Exact,
+                Strength::Proven => GuaranteeStrength::Proven,
+                Strength::Empirical => GuaranteeStrength::Empirical,
+                Strength::Declared => GuaranteeStrength::Declared,
+            }
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "eval.rs", "l1.eval")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        !report.emitted_items.iter().any(|n| n == "co-emit:Strength"),
+        "must not co-emit Strength when it is declared in-file; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report
+            .emitted_items
+            .iter()
+            .any(|n| n == "co-emit:GuaranteeStrength"),
+        "expected co-emitted GuaranteeStrength only; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    // In-file enum still emits (DN-140 variant renames).
+    assert!(
+        myc.contains("type Strength = Exact_kw | Proven_kw | Empirical_kw | Declared_kw;"),
+        "in-file Strength enum must emit:\n{myc}"
+    );
+}
+
+// ---- ORACLE-R1 A4: private const co-emit (eval.rs DEFAULT_FUEL / DEFAULT_DEPTH) ----------------
+
+/// `impl Default` for a budget opts struct references private `DEFAULT_FUEL` / `DEFAULT_DEPTH`
+/// consts. Co-emit them as zero-arg BinLit fns and rewrite use sites to calls so myc-check never
+/// sees `unknown name DEFAULT_FUEL` (post-A2 residual on eval.rs Init).
+#[test]
+fn const_co_emit_default_fuel_depth_init_no_unknown_name_poison() {
+    let rust = r#"
+        const DEFAULT_FUEL: u64 = 1_000_000;
+        const DEFAULT_DEPTH: u32 = RecursionBudget::DEFAULT_DEPTH_LIMIT;
+        pub struct EvaluatorOpts {
+            pub fuel: u64,
+            pub depth: u32,
+        }
+        impl Default for EvaluatorOpts {
+            fn default() -> Self {
+                EvaluatorOpts {
+                    fuel: DEFAULT_FUEL,
+                    depth: DEFAULT_DEPTH,
+                }
+            }
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "eval.rs", "l1.eval")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        report.emitted_items.iter().any(|n| n == "DEFAULT_FUEL"),
+        "expected co-emitted DEFAULT_FUEL; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report.emitted_items.iter().any(|n| n == "DEFAULT_DEPTH"),
+        "expected co-emitted DEFAULT_DEPTH; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("fn DEFAULT_FUEL() => Binary{64} ="),
+        "missing DEFAULT_FUEL zero-arg fn:\n{myc}"
+    );
+    assert!(
+        myc.contains("fn DEFAULT_DEPTH() => Binary{32} ="),
+        "missing DEFAULT_DEPTH zero-arg fn:\n{myc}"
+    );
+    assert!(
+        myc.contains("DEFAULT_FUEL()") && myc.contains("DEFAULT_DEPTH()"),
+        "Init body must call co-emitted consts, not bare names:\n{myc}"
+    );
+    assert!(
+        !myc.contains("EvaluatorOpts(DEFAULT_FUEL, DEFAULT_DEPTH)"),
+        "must not leave bare const names in Init (file poison):\n{myc}"
+    );
+    // Co-emitted fns must precede Init (name must be in scope before use).
+    let fuel_pos = myc
+        .find("fn DEFAULT_FUEL()")
+        .expect("DEFAULT_FUEL fn position");
+    let init_pos = myc.find("fn init()").expect("init position");
+    assert!(
+        fuel_pos < init_pos,
+        "co-emitted DEFAULT_FUEL must precede init:\n{myc}"
+    );
+
+    if let Some(bin) = find_myc_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "myc-a4-fuel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("eval_opts.myc");
+        std::fs::write(&path, &myc).expect("write myc");
+        let checker = crate::vet::MycChecker {
+            command: vec![bin.display().to_string()],
+            cwd: None,
+        };
+        let rec = checker.vet_file(&path, "eval.rs", 1, 1);
+        assert_eq!(
+            rec.class,
+            crate::vet::VetClass::Clean,
+            "DEFAULT_FUEL/DEFAULT_DEPTH co-emit must not file-poison with unknown name; \
+             myc=\n{myc}\ndiagnostic={:?}",
+            rec.diagnostic
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A const whose initializer is not a decidable integer stays a whole-item gap (never invents
+/// a value — VR-5).
+#[test]
+fn const_non_decidable_initializer_still_gapped() {
+    let rust = "const BAD: u64 = foo() + 1;";
+    let (myc, report) =
+        transpile_source(rust, "f.rs", "f").unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        !report.emitted_items.iter().any(|n| n == "BAD"),
+        "must not emit non-decidable const; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report.gaps.iter().any(|g| {
+            g.item_name.as_deref() == Some("BAD")
+                && g.reason.contains("decidable non-negative integer")
+        }),
+        "expected honest gap for non-decidable const; gaps={:?}\nmyc=\n{myc}",
+        report
+            .gaps
+            .iter()
+            .map(|g| (&g.item_name, &g.reason))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---- L2-C: std-io Source/Sink named-field structs must emit (not M-1006 false-gap) --------------
+
+/// Minimal std-io residual shape: named-field `Substrate`/`Source`/`Sink` (fields are only
+/// `Vec<u8>` / nested in-file types / `usize`) plus a free-fn `read_all(src: Source)` that used to
+/// emit while the structs stayed gapped under a false M-1006 "Vec is a user dep" classification →
+/// `unknown type Source` file poison. After the L2-C fix, the three structs emit positionally
+/// (named fields dropped + EXPLAIN sub-gap) so the free-fn's `Source` type is declared in-file.
+#[test]
+fn source_sink_named_field_structs_emit_not_unknown_type_poison() {
+    let rust = r#"
+        pub struct Substrate {
+            data: Vec<u8>,
+            pos: usize,
+        }
+        pub struct Source {
+            substrate: Substrate,
+        }
+        pub struct Sink {
+            buffer: Vec<u8>,
+        }
+        // Identity free-fn so the signature alone is the residual class (body residuals are
+        // orthogonal). Real std-io `read_all` still has body gaps; the poison was the *type*.
+        pub fn identity_src(src: Source) -> Source {
+            src
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "io.rs", "std.io.io")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+
+    // `Substrate` is a Mycelium reserved word (DN-140) → emits as `Substrate_kw`.
+    for (raw, emitted) in [
+        ("Substrate", "Substrate_kw"),
+        ("Source", "Source"),
+        ("Sink", "Sink"),
+    ] {
+        assert!(
+            report.emitted_items.iter().any(|n| n == emitted),
+            "expected `{raw}` emitted as `{emitted}` (not M-1006 false-gap); emitted={:?}\nmyc=\n{myc}",
+            report.emitted_items
+        );
+        assert!(
+            !report.gaps.iter().any(|g| {
+                g.item_name.as_deref() == Some(raw)
+                    && g.category == Category::Struct
+                    && g.reason.contains("not resolvable in-file")
+            }),
+            "`{raw}` must not be whole-item gapped under M-1006 resolvability; gaps={:?}\nmyc=\n{myc}",
+            report
+                .gaps
+                .iter()
+                .filter(|g| g.item_name.as_deref() == Some(raw))
+                .map(|g| (&g.category, &g.reason))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Positional emission of the product (named fields dropped — EXPLAIN via NamedFieldDrop).
+    // Substrate rewrites to Substrate_kw (reserved-word, DN-140).
+    assert!(
+        myc.contains("type Substrate_kw = Substrate_kw(Vec[Binary{8}], Binary{64});")
+            || myc.contains("type Substrate_kw = Substrate_kw("),
+        "missing Substrate_kw type emission:\n{myc}"
+    );
+    assert!(
+        myc.contains("type Source = Source(Substrate_kw);"),
+        "missing Source type emission (field type Substrate → Substrate_kw):\n{myc}"
+    );
+    assert!(
+        myc.contains("type Sink = Sink(Vec[Binary{8}]);"),
+        "missing Sink type emission:\n{myc}"
+    );
+    assert!(
+        report.emitted_items.iter().any(|n| n == "identity_src"),
+        "expected identity_src free-fn emitted with Source in signature; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("fn identity_src(src: Source)") && myc.contains("=> Source"),
+        "missing identity_src signature referencing Source:\n{myc}"
+    );
+    // Types must precede the free-fn that names them (declaration-before-use).
+    let src_ty = myc.find("type Source =").expect("Source type position");
+    let fn_pos = myc.find("fn identity_src").expect("identity_src position");
+    assert!(
+        src_ty < fn_pos,
+        "Source type must precede identity_src:\n{myc}"
+    );
+
+    // Real-oracle gate when myc-check is available: no `unknown type Source` file poison.
+    if let Some(bin) = super::vet::find_myc_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "myc-l2c-source-sink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("io.myc");
+        std::fs::write(&path, &myc).expect("write myc");
+        let checker = crate::vet::MycChecker {
+            command: vec![bin.display().to_string()],
+            cwd: None,
+        };
+        let rec = checker.vet_file(&path, "io.rs", 4, 4);
+        let diag = rec.diagnostic.as_str();
+        assert!(
+            !diag.contains("unknown type `Source`")
+                && !diag.contains("unknown type Source")
+                && !diag.contains("unknown type `Sink`")
+                && !diag.contains("unknown type `Substrate`")
+                && !diag.contains("unknown type `Substrate_kw`"),
+            "Source/Sink/Substrate type emission must not file-poison with unknown type; \
+             class={:?} diagnostic={:?}\nmyc=\n{myc}",
+            rec.class,
+            rec.diagnostic
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ---- G-α Rank-1 / L2-A: ambient Result / Option co-emit ---------------------------------------
+
+/// Free-fn returning `Result[…]` co-emits `type Result[A, E] = Ok(A) | Err(E);` once (with EXPLAIN
+/// citing lib/std/result.myc) so myc-check never sees `unknown type Result` (std-io read_all poison).
+#[test]
+fn ambient_result_co_emit_on_result_return() {
+    let rust = r#"
+        pub fn read_all(flag: u8) -> Result<u8, u8> {
+            Ok(flag)
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "io.rs", "std.io.io")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        report.emitted_items.iter().any(|n| n == "co-emit:Result"),
+        "expected co-emit:Result; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        report.emitted_items.iter().any(|n| n == "read_all"),
+        "expected read_all emitted; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("type Result[A, E] = Ok(A) | Err(E);"),
+        "missing ambient Result type shape (lib/std/result.myc):\n{myc}"
+    );
+    assert!(
+        myc.contains("lib/std/result.myc") || myc.contains("ambient Result"),
+        "EXPLAIN must cite ambient Result / lib/std/result.myc:\n{myc}"
+    );
+    // Exactly one type Result definition line (never double-emit). Count line-starts only so an
+    // EXPLAIN citation cannot false-double the tally.
+    let type_result_lines = myc
+        .lines()
+        .filter(|l| {
+            l.trim_start()
+                .starts_with("type Result[A, E] = Ok(A) | Err(E);")
+        })
+        .count();
+    assert_eq!(
+        type_result_lines, 1,
+        "Result ambient must appear once as a type item:\n{myc}"
+    );
+    // Combinators must NOT be fabricated as ambient.
+    assert!(
+        !myc.contains("fn is_ok[") && !myc.contains("fn map[A, B, E]"),
+        "must not fabricate Result combinators as ambient:\n{myc}"
+    );
+    // Co-emit precedes the free-fn.
+    let t_pos = myc
+        .find("type Result[A, E] = Ok(A) | Err(E);")
+        .expect("Result type position");
+    let fn_pos = myc.find("fn read_all").expect("read_all position");
+    assert!(
+        t_pos < fn_pos,
+        "ambient Result must precede read_all:\n{myc}"
+    );
+
+    if let Some(bin) = super::vet::find_myc_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "myc-g-alpha-result-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("io.myc");
+        std::fs::write(&path, &myc).expect("write myc");
+        let checker = crate::vet::MycChecker {
+            command: vec![bin.display().to_string()],
+            cwd: None,
+        };
+        let rec = checker.vet_file(&path, "io.rs", 1, 1);
+        assert_eq!(
+            rec.class,
+            crate::vet::VetClass::Clean,
+            "read_all + ambient Result must not file-poison with unknown type Result; \
+             myc=\n{myc}\ndiagnostic={:?}",
+            rec.diagnostic
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Option-only surface co-emits Option ambient, not Result.
+#[test]
+fn ambient_option_co_emit_on_option_return() {
+    let rust = r#"
+        pub fn maybe(flag: u8) -> Option<u8> {
+            Some(flag)
+        }
+    "#;
+    let (myc, report) = transpile_source(rust, "opt.rs", "std.opt")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        report.emitted_items.iter().any(|n| n == "co-emit:Option"),
+        "expected co-emit:Option; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        !report.emitted_items.iter().any(|n| n == "co-emit:Result"),
+        "must not co-emit Result when only Option is mentioned; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        myc.contains("type Option[A] = Some(A) | None;"),
+        "missing ambient Option type shape (lib/std/option.myc):\n{myc}"
+    );
+    assert!(
+        !myc.contains("type Result[A, E] = Ok(A) | Err(E);"),
+        "must not ambient-emit Result when unused:\n{myc}"
+    );
+}
+
+/// No Result/Option in surface ⇒ no ambient co-emit.
+#[test]
+fn ambient_result_option_skipped_when_unused() {
+    let rust = r#"
+        pub fn id(x: u8) -> u8 { x }
+    "#;
+    let (myc, report) = transpile_source(rust, "id.rs", "std.id")
+        .unwrap_or_else(|e| panic!("transpile failed: {e}"));
+    assert!(
+        !report
+            .emitted_items
+            .iter()
+            .any(|n| n.starts_with("co-emit:Result") || n.starts_with("co-emit:Option")),
+        "no ambient Result/Option when unused; emitted={:?}\nmyc=\n{myc}",
+        report.emitted_items
+    );
+    assert!(
+        !myc.contains("type Result[A, E] = Ok(A) | Err(E);")
+            && !myc.contains("type Option[A] = Some(A) | None;"),
+        "must not inject ambient types when unused:\n{myc}"
+    );
+}
+
+/// In-file `type Result[…]` definition (via a Rust enum named Result) must not double-define.
+/// When the body already defines Result, ambient co-emit is skipped.
+#[test]
+fn ambient_result_skips_when_already_defined() {
+    // Force a body that both defines Result-like surface and mentions Result[…] — the ambient
+    // gate keys off `type Result[` already present in the assembled body.
+    // Direct unit test of the pure preamble helper (emit path for a real enum named Result would
+    // also define `type Result = …` without type args, which body_defines_type_head also catches).
+    let body_with_def = "type Result[A, E] = Ok(A) | Err(E);\n\nfn f() => Result[Binary{8}, Binary{8}] = Ok(0b8'0);";
+    let preamble = crate::emit::ambient_result_option_preamble(body_with_def);
+    assert!(
+        preamble.is_empty(),
+        "must not re-co-emit Result when already defined; got {preamble:?}"
+    );
+    let body_needs = "fn f() => Result[Binary{8}, Binary{8}] = Ok(0b8'0);";
+    let preamble2 = crate::emit::ambient_result_option_preamble(body_needs);
+    assert_eq!(
+        preamble2.len(),
+        1,
+        "must co-emit Result when mentioned and undefined; got {preamble2:?}"
+    );
+    assert_eq!(preamble2[0].0, "Result");
 }

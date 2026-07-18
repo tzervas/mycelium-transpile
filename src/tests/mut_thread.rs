@@ -66,14 +66,9 @@ fn myc_check_clean(myc: &str, case: &str) {
 /// A simple `&mut self` compound-assignment mutator (DN-125 §5.1's `incr` illustration, shape-
 /// wise) threads: the receiver is taken by value, the body's `self.0 ^= mask;` rebuilds `Counter`
 /// positionally via nested-let shadowing, and the signature's return type widens to the
-/// receiver's own type (no extra value — the source returned `()`). Uses `^=` (bitwise XOR)
-/// rather than `+=` for the operator: `^` is this transpiler's one glyph that already composes
-/// unconditionally `myc check`-clean on `Binary{N}` operands (see `emit::EmitVisitor::visit_binary`'s
-/// own doc); a *plain* `+`/`+=` on two `Binary{N}` values is a PRE-EXISTING, orthogonal gap this
-/// leaf discovered but does not fix (`add` does not accept `Binary{N}` operand types today,
-/// verified empirically against the real `myc-check` oracle, independent of this DN's threading —
-/// see `mut_self_field_add_assign_hits_pre_existing_add_glyph_gap` below, which pins the finding
-/// honestly rather than silently choosing an operator that hides it).
+/// receiver's own type (no extra value — the source returned `()`). `^=` remains a stable
+/// bitwise path; `+=` on a field projection is covered separately (now `add_u`-clean once the
+/// peer field width is recovered — see `mut_self_field_add_assign_emits_add_u_check_clean`).
 #[test]
 fn mut_self_field_compound_assign_value_threads() {
     let rust =
@@ -99,66 +94,29 @@ fn mut_self_field_compound_assign_value_threads() {
     myc_check_clean(&myc, "mut_self_field_compound_assign");
 }
 
-/// **Honest disconfirming-evidence pin (VR-5, house rule #4 — never sweep a discovered gap under
-/// the rug).** This DN-125 leaf's live-oracle probing incidentally found that a plain `+`/`+=` on
-/// two `Binary{N}` values does NOT `myc check`-clean in this transpiler TODAY — `add` refuses
-/// `Binary{N}` operand types (`T-Op`, RFC-0007 §4.4). This is a PRE-EXISTING, orthogonal gap
-/// (reproduces identically on a plain two-param free fn with no `&mut`/threading involved at
-/// all — confirmed by hand against the oracle during this leaf's work) — NOT introduced by, and
-/// out of scope for, this DN's value-threading lowering (which only composes the SAME `+`/`+=`
-/// text `emit_expr`'s existing `Expr::Binary` arm already emits for any other context). Pinned
-/// here as a regression witness for a future `+`/`Add` composed-form fix (mirroring the `&`/`|`/
-/// `!=`/`>` composed-form precedent already landed for those operators) — never silently claimed
-/// working.
+/// **Pin update (ORACLE-R1 A1 / L1 self-review, 2026-07-16).** DN-125 originally pinned that
+/// plain `+`/`+=` on two `Binary{N}` values failed live `myc-check` (`add` T-Op refuse). After
+/// the field-type map landed for lit-zero rewrite, a field-projection `self.0 += by` recovers
+/// peer width and routes through the existing unsigned `add_u` composed form — so this shape is
+/// now **check-clean** (honest side-effect; not a fabricated prim). The free-fn bare-glyph `+`
+/// path without known Binary peers may still differ; this pin covers the field-compound shape
+/// that mut_thread actually emits.
 #[test]
-fn mut_self_field_add_assign_hits_pre_existing_add_glyph_gap() {
-    let Some(bin) = find_myc_check() else {
-        eprintln!(
-            "mut_thread: pre-existing-gap pin skipped — no runnable myc-check (set \
-             MYC_CHECK_CMD or build `cargo build -p mycelium-check --bin myc-check`)."
-        );
-        return;
-    };
+fn mut_self_field_add_assign_emits_add_u_check_clean() {
     let rust =
         "struct Counter(u64); impl Counter { fn incr(&mut self, by: u64) { self.0 += by; } }";
     let (myc, report) =
         transpile_source(rust, "fixture.rs", "mut_thread").expect("parse/transpile");
     assert!(
         report.gaps.is_empty(),
-        "the value-threading lowering itself must still emit with zero gaps (the failure this \
-         test pins is a myc-check-time type error, not a transpile-time gap): gaps={:?}",
+        "value-threading + field `+=` must emit with zero gaps: gaps={:?}\nmyc:\n{myc}",
         report.gaps
     );
-    let dir = std::env::temp_dir().join(format!(
-        "mycelium-transpile-mut-thread-addgap-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let path = dir.join("case.myc");
-    std::fs::write(&path, &myc).expect("write case .myc");
-    let checker = crate::vet::MycChecker {
-        command: vec![bin.display().to_string()],
-        cwd: None,
-    };
-    let rec = checker.vet_file(&path, "fixture.rs", 1, 1);
-    assert_eq!(
-        rec.class,
-        crate::vet::VetClass::CheckError,
-        "if this now passes, the pre-existing `add`/`Binary{{N}}` gap has been fixed elsewhere — \
-         update this pin (and `mut_self_field_compound_assign_value_threads` may drop its `^=` \
-         workaround): diagnostic={:?}\nmyc:\n{myc}",
-        rec.diagnostic
-    );
     assert!(
-        rec.diagnostic.contains("`add` does not accept"),
-        "expected the `add`/T-Op diagnostic specifically, got: {:?}",
-        rec.diagnostic
+        myc.contains("add_u(") && myc.contains("Counter(p0)"),
+        "expected field `+=` to emit `add_u` over the projected payload:\n{myc}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    myc_check_clean(&myc, "mut_self_field_add_assign");
 }
 
 /// The builder-chain shortcut: `-> &mut Self` returning the receiver for chaining threads to a
