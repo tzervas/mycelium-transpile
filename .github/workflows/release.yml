@@ -1,0 +1,89 @@
+# Release cut on the self-hosted Podman fleet (gha-runner-ctl-compliant labels; no
+# GitHub-hosted fallback — the job runs only when a fleet listener registers a runner).
+#
+# POLICY: source-only release (no crates.io — mirrors tzervas/mycelium ADR-018 posture). One
+# workflow_dispatch = one tag + one GitHub Release at the EXACT rev passed in (the course-
+# correction release manifest rev — see tzervas/mycelium
+# docs/planning/course-correction-2026-07-18/RELEASE-v0.464.0.md), never the moving branch tip.
+# Fresh-tags-only: an existing tag of the same name is a hard, never-silent refusal — this
+# workflow never overwrites or force-moves a tag. GitHub attaches the reproducible source
+# archives (tar.gz/zip) to the Release automatically; `git archive --format=tar.gz <tag>`
+# reproduces the tarball byte-stably from any clone.
+#
+# Supply-chain posture: no third-party actions — the job is plain curl against this repo's own
+# REST API using the workflow-scoped GITHUB_TOKEN (contents: write only).
+name: release (tag + GitHub Release at a pinned rev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create (fresh only — an existing tag refuses)"
+        required: true
+        default: "v0.464.0"
+      rev:
+        description: "Full 40-char commit SHA to tag (the release-manifest rev)"
+        required: true
+      notes:
+        description: "Release notes body (markdown)"
+        required: false
+        default: "Course-correction train release. Verification basis and honesty ladder: tzervas/mycelium docs/planning/course-correction-2026-07-18/RELEASE-v0.464.0.md"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, linux, x64, podman]
+    steps:
+      - name: Validate inputs (never-silent — a malformed rev refuses here, not downstream)
+        run: |
+          set -eu
+          case "${{ inputs.rev }}" in
+            *[!0-9a-f]*|"") echo "::error::rev must be a full lowercase 40-hex SHA"; exit 1;;
+          esac
+          test "${#REV}" -eq 40 || { echo "::error::rev must be exactly 40 hex chars"; exit 1; }
+        env:
+          REV: ${{ inputs.rev }}
+
+      - name: Refuse if the tag already exists (fresh-tags-only)
+        run: |
+          set -eu
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${{ inputs.tag }}")
+          if [ "$code" = "200" ]; then
+            echo "::error::tag ${{ inputs.tag }} already exists — this workflow never overwrites a tag"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the rev exists in this repository
+        run: |
+          set -eu
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/commits/${{ inputs.rev }}")
+          test "$code" = "200" || { echo "::error::rev ${{ inputs.rev }} not found (HTTP $code)"; exit 1; }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the Release (creates the tag at the pinned rev + auto source archives)
+        run: |
+          set -eu
+          body=$(printf '%s' "${NOTES}" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
+          code=$(curl -sS -o /tmp/release-resp.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases" \
+            -d "{\"tag_name\":\"${{ inputs.tag }}\",\"target_commitish\":\"${{ inputs.rev }}\",\"name\":\"${{ inputs.tag }}\",\"body\":\"${body}\",\"draft\":false,\"prerelease\":false}")
+          if [ "$code" != "201" ]; then
+            echo "::error::release creation failed (HTTP $code)"; cat /tmp/release-resp.json; exit 1
+          fi
+          echo "Release created:"; grep -o '"html_url": *"[^"]*"' /tmp/release-resp.json | head -1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ inputs.notes }}
