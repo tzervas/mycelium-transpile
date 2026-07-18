@@ -79,12 +79,31 @@ fn classify_all(names: &BTreeSet<String>, other: &BTreeSet<String>) -> Vec<(Stri
         .collect()
 }
 
+/// Dual-layout fixture resolution (course-correction Phase B, 2026-07-18). In the monorepo this
+/// crate lives at `crates/mycelium-transpile`, so the real `mycelium-std-cmp` source and the
+/// `lib/std/cmp.myc` twin resolve via relative paths. In the standalone component repo those
+/// paths escape the repo, so pinned snapshots from archive `aad96b7a` ship under
+/// `fixtures/monorepo/` and are preferred when present (hermetic in CI; the monorepo has no
+/// `fixtures/monorepo/` dir and falls through to the live paths — deterministic in both layouts).
+fn fixture_or(fixture: &str, monorepo_rel: &str) -> PathBuf {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixed = base.join(fixture);
+    if fixed.is_file() {
+        fixed
+    } else {
+        base.join(monorepo_rel)
+    }
+}
+
 fn std_cmp_rust_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mycelium-std-cmp/src/lib.rs")
+    fixture_or(
+        "fixtures/monorepo/std-cmp-lib.rs",
+        "../mycelium-std-cmp/src/lib.rs",
+    )
 }
 
 fn std_cmp_twin_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lib/std/cmp.myc")
+    fixture_or("fixtures/monorepo/cmp.myc", "../../lib/std/cmp.myc")
 }
 
 /// Regression guard (High finding, G2/DN-34 §4; extended by DN-41/M-873 follow-on) over the

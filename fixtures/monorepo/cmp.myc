@@ -1,0 +1,129 @@
+// nodule: std.cmp
+// @version: 0.3.0
+// @license: MIT
+// @authors: Tyler Zervas
+// @since: 2026-06-23
+// @updated: 2026-06-27
+// @summary: Self-hosted ordering/equality surface — the Ordering type (Lt | Eq | Gt), its
+nodule std.cmp;
+
+// projections (is_lt/is_eq/is_gt, reverse), and the structural equality/total-order functions over
+// finite kernel types (Bool, Ordering), plus WIDTH-GENERIC comparison helpers over Binary{N} (M-715
+// E13-1 / M-718, RFC-0031 §5 D4 Tier-0/Tier-1; DN-42 width-generics). Guarantee: every op is total
+// over its domain and match-defined or prim-backed; differential agreement (L1-eval ≡ L0-interp ≡
+// AOT) is Empirical (trials, std_cmp.rs). The width-generic helpers (cmp/le/ge/max/min) wrap the
+// `eq`/`lt` kernel prims which are Exact over the finite Binary{N} domain — tagged Exact for every
+// concrete width the call site pins. Never-silent (G2): no op fabricates an ordering for a value it
+// cannot compare — the surface only covers types it can decide structurally or via the surfaced
+// prims; an undetermined width is an explicit monomorphization refusal, never a guessed default.
+// The three-valued total-order result. Total and finite: every comparison lands in exactly one arm.
+type Ordering = Lt | Eq | Gt;
+
+// is_lt / is_eq / is_gt: project an Ordering to Bool. Total over the finite Ordering domain (Exact).
+fn is_lt(o: Ordering) => Bool =
+  match o { Lt => True, Eq => False, Gt => False };
+
+fn is_eq(o: Ordering) => Bool =
+  match o { Lt => False, Eq => True, Gt => False };
+
+fn is_gt(o: Ordering) => Bool =
+  match o { Lt => False, Eq => False, Gt => True };
+
+// reverse: swap Lt <-> Gt, fix Eq — the order-reversal that turns an ascending comparator into a
+// descending one. An involution; total over Ordering (Exact).
+fn reverse(o: Ordering) => Ordering =
+  match o { Lt => Gt, Eq => Eq, Gt => Lt };
+
+// bool_eq: structural equality on Bool, match-defined (no kernel eq prim needed). Total (Exact).
+fn bool_eq(a: Bool, b: Bool) => Bool =
+  match a {
+    True => match b { True => True, False => False },
+    False => match b { True => False, False => True }
+  };
+
+// bool_cmp: the canonical total order on Bool with False < True. Total over Bool x Bool (Exact).
+fn bool_cmp(a: Bool, b: Bool) => Ordering =
+  match a {
+    False => match b { False => Eq, True => Lt },
+    True => match b { False => Gt, True => Eq }
+  };
+
+// ord_eq: structural equality on Ordering itself (a finite enum). Total (Exact). Useful for asserting
+// a comparator's result without re-matching at every call site.
+fn ord_eq(a: Ordering, b: Ordering) => Bool =
+  match a {
+    Lt => match b { Lt => True, Eq => False, Gt => False },
+    Eq => match b { Lt => False, Eq => True, Gt => False },
+    Gt => match b { Lt => False, Eq => False, Gt => True }
+  };
+
+// ── Width-generic comparison helpers over Binary{N} (M-718; supersedes the Binary{8} interim) ──────
+//
+// These helpers wrap the `eq`/`lt` kernel prims into the Ordering surface, width-POLYMORPHIC over the
+// representation width `N` (M-753 width-generics, DN-42 Option A). `eq`/`lt` are Exact over the finite
+// Binary{N} domain (unsigned magnitude, 2^N elements), so each derived helper is Exact for every
+// concrete `N` the call site pins. Three-way differential agreement (L1-eval ≡ L0-interp ≡ AOT) is
+// Empirical (trials, std_cmp.rs). This SUPERSEDES the wave-n1 `cmp_u8/le_u8/ge_u8/max_u8/min_u8`
+// Binary{8}-monomorphic interim — the FLAG that "width-generic versions await M-753" is now CLOSED;
+// one definition each, polymorphic over `N`.
+//
+// Never-silent (G2 / VR-5): `N` is bound at the call site from the operands' width. An undetermined
+// width is an explicit monomorphization refusal (DN-42 §4), never a guessed default; a call mixing
+// two widths (e.g. `cmp(x: Binary{8}, y: Binary{16})`) is a width-mismatch refusal, never a silent
+// coercion. The `eq`/`lt` result is `Binary{1}` regardless of `N`, so the Bool-bridge is width-free.
+//
+// DRY: `le/ge/max/min` are defined as projections of `cmp` — width-generic-to-width-generic delegation
+// (one width-generic fn calling another with a still-ABSTRACT width) is supported as of M-718: the
+// `unify` width-var pass-through binds the callee's width var to the caller's, mirroring the type-var
+// pass-through, so the callee's width is "determined by the enclosing scope" and resolved at
+// monomorphization. (Before M-718 this delegation was refused, so the wave-n1 `_u8` helpers inlined
+// `eq`/`lt`; that limitation is now CLOSED — the recursive width-generic `map_get`/`set_contains` ride
+// the same pass-through.)
+// cmp<N>: three-way comparison of two Binary{N} values (unsigned magnitude). Eq if equal, Lt if
+// a < b, Gt otherwise. Total over Binary{N} x Binary{N} for every concrete N (Exact: eq/lt are Exact
+// prims; every case is covered by the nested match).
+fn cmp{N}(a: Binary{N}, b: Binary{N}) => Ordering =
+  match eq(a, b) { 0b1 => Eq, _ => match lt(a, b) { 0b1 => Lt, _ => Gt } };
+
+// le<N>: True iff a <= b — a projection of cmp (Exact; total over Binary{N} x Binary{N}).
+fn le{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match cmp(a, b) { Lt => True, Eq => True, Gt => False };
+
+// ge<N>: True iff a >= b — a projection of cmp (Exact; total).
+fn ge{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match cmp(a, b) { Lt => False, Eq => True, Gt => True };
+
+// max<N>: the larger of a and b; returns b when equal (arbitrary but total — equal Binary{N} values
+// are bit-identical, so the tie-break is observationally irrelevant). Exact.
+fn max{N}(a: Binary{N}, b: Binary{N}) => Binary{N} =
+  match cmp(a, b) { Lt => b, Eq => b, Gt => a };
+
+// min<N>: the smaller of a and b; returns a when equal (irrelevant tie-break, as max). Exact.
+fn min{N}(a: Binary{N}, b: Binary{N}) => Binary{N} =
+  match cmp(a, b) { Lt => a, Eq => a, Gt => b };
+
+// ── CU-4: the missing surface completeness (RFC-0033 §4.1.2 / RFC-0032 D1) ─────────────────────────
+// RFC-0032 D1 makes `eq`/`lt` the minimal comparison *prim* basis; everything else is derived here.
+// These close the surface gaps the transpiler needs (signed ordering + `ne`/`gt`) — all Exact,
+// total over Binary{N} x Binary{N}, no new kernel prim (the `lt_s` prim already exists, unused).
+// ne<N>: True iff a != b — the negation of `eq` (Exact; total).
+fn ne{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match eq(a, b) { 0b1 => False, _ => True };
+
+// gt<N>: True iff a > b (unsigned) — a projection of cmp (Exact; total).
+fn gt{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match cmp(a, b) { Gt => True, Lt => False, Eq => False };
+
+// cmp_s<N>: SIGNED three-way comparison — two's-complement ordering (RFC-0033 §4.1.2: ordering is
+// signedness-distinct). Uses the `lt_s` prim (signed less-than) + `eq` (bit-identity, signedness-
+// agnostic). Total, Exact for every concrete N.
+fn cmp_s{N}(a: Binary{N}, b: Binary{N}) => Ordering =
+  match eq(a, b) { 0b1 => Eq, _ => match lt_s(a, b) { 0b1 => Lt, _ => Gt } };
+
+// le_s<N>: True iff a <= b under the SIGNED (two's-complement) ordering — projection of cmp_s. Exact.
+fn le_s{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match cmp_s(a, b) { Lt => True, Eq => True, Gt => False };
+
+// ge_s<N>: True iff a >= b under the SIGNED ordering — projection of cmp_s. Exact.
+fn ge_s{N}(a: Binary{N}, b: Binary{N}) => Bool =
+  match cmp_s(a, b) { Lt => False, Eq => True, Gt => True };
