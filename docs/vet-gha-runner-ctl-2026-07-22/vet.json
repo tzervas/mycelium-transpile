@@ -1,0 +1,50 @@
+{
+  "records": [
+    {
+      "myc_file": "/tmp/vet-gha/lib.myc",
+      "source_file": "gha-runner-ctl/src/lib.rs",
+      "class": {
+        "Other": 101
+      },
+      "exit_code": 101,
+      "diagnostic": "\u001b[1m\u001b[91merror\u001b[0m: could not find `Cargo.toml` in `/home/user/myc-review` or any parent directory",
+      "non_test_items": 164,
+      "emitted_items": 28
+    },
+    {
+      "myc_file": "/tmp/vet-gha/main.myc",
+      "source_file": "gha-runner-ctl/src/main.rs",
+      "class": {
+        "Other": 101
+      },
+      "exit_code": 101,
+      "diagnostic": "\u001b[1m\u001b[91merror\u001b[0m: could not find `Cargo.toml` in `/home/user/myc-review` or any parent directory",
+      "non_test_items": 1,
+      "emitted_items": 0
+    },
+    {
+      "myc_file": "/tmp/vet-gha/pool.myc",
+      "source_file": "gha-runner-ctl/src/pool.rs",
+      "class": {
+        "Other": 101
+      },
+      "exit_code": 101,
+      "diagnostic": "\u001b[1m\u001b[91merror\u001b[0m: could not find `Cargo.toml` in `/home/user/myc-review` or any parent directory",
+      "non_test_items": 27,
+      "emitted_items": 4
+    }
+  ],
+  "total_non_test_items": 192,
+  "total_emitted_items": 32,
+  "total_checked_clean_items": 0,
+  "class_counts": {
+    "Other": 3
+  },
+  "phylum": {
+    "ran": false,
+    "ok": false,
+    "nodules": [],
+    "diagnostic": "\u001b[1m\u001b[91merror\u001b[0m: could not find `Cargo.toml` in `/home/user/myc-review` or any parent directory"
+  },
+  "total_checked_clean_items_phylum": 0
+}

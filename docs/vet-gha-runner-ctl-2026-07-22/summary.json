@@ -1,0 +1,134 @@
+{
+  "files": [
+    {
+      "file": "gha-runner-ctl/src/lib.rs",
+      "total_items": 165,
+      "non_test_items": 164,
+      "emitted": 28,
+      "gaps": 167,
+      "expressible_pct": 17.073170731707318,
+      "category_counts": {
+        "DeriveAttr": 8,
+        "DeriveSatisfied": 8,
+        "Impl": 4,
+        "Import": 16,
+        "MacroInvocation": 6,
+        "ModuleDecl": 1,
+        "MultiStmtBody": 36,
+        "NamedFieldDrop": 5,
+        "Other": 74,
+        "PayloadVariant": 1,
+        "Struct": 8
+      }
+    },
+    {
+      "file": "gha-runner-ctl/src/main.rs",
+      "total_items": 1,
+      "non_test_items": 1,
+      "emitted": 0,
+      "gaps": 1,
+      "expressible_pct": 0.0,
+      "category_counts": {
+        "Other": 1
+      }
+    },
+    {
+      "file": "gha-runner-ctl/src/pool.rs",
+      "total_items": 28,
+      "non_test_items": 27,
+      "emitted": 4,
+      "gaps": 28,
+      "expressible_pct": 14.814814814814813,
+      "category_counts": {
+        "Closure": 1,
+        "DeriveAttr": 1,
+        "DeriveSatisfied": 3,
+        "Impl": 1,
+        "Import": 6,
+        "MultiStmtBody": 2,
+        "Other": 10,
+        "Struct": 3,
+        "TestItem": 1
+      }
+    }
+  ],
+  "totals": {
+    "total_items": 194,
+    "non_test_items": 192,
+    "emitted": 32,
+    "gaps": 196,
+    "expressible_pct": 16.666666666666664,
+    "category_counts": {
+      "Closure": 1,
+      "DeriveAttr": 9,
+      "DeriveSatisfied": 11,
+      "Impl": 5,
+      "Import": 22,
+      "MacroInvocation": 6,
+      "ModuleDecl": 1,
+      "MultiStmtBody": 38,
+      "NamedFieldDrop": 5,
+      "Other": 85,
+      "PayloadVariant": 1,
+      "Struct": 11,
+      "TestItem": 1
+    }
+  },
+  "remap": {
+    "phylum": {
+      "source_crate": "gha-runner-ctl",
+      "target_phylum": "gha.runner.ctl"
+    },
+    "nodules": [
+      {
+        "target_nodule": "gha.runner.ctl",
+        "operation": "Keep",
+        "sources": [
+          {
+            "rust_path": "gha-runner-ctl/src/lib.rs",
+            "rust_span": null,
+            "moved_items": []
+          }
+        ],
+        "rationale": "structure-preserving 1:1 (DN-109 §5.3-B v0 default: every emitted nodule keeps its source file's mod-tree position, no restructuring proposed)",
+        "safety": "Safe",
+        "api_surface_changed": false,
+        "identity_neutral": true,
+        "guarantee": "Declared"
+      },
+      {
+        "target_nodule": "gha.runner.ctl.main",
+        "operation": "Keep",
+        "sources": [
+          {
+            "rust_path": "gha-runner-ctl/src/main.rs",
+            "rust_span": null,
+            "moved_items": []
+          }
+        ],
+        "rationale": "structure-preserving 1:1 (DN-109 §5.3-B v0 default: every emitted nodule keeps its source file's mod-tree position, no restructuring proposed)",
+        "safety": "Safe",
+        "api_surface_changed": false,
+        "identity_neutral": true,
+        "guarantee": "Declared"
+      },
+      {
+        "target_nodule": "gha.runner.ctl.pool",
+        "operation": "Keep",
+        "sources": [
+          {
+            "rust_path": "gha-runner-ctl/src/pool.rs",
+            "rust_span": null,
+            "moved_items": []
+          }
+        ],
+        "rationale": "structure-preserving 1:1 (DN-109 §5.3-B v0 default: every emitted nodule keeps its source file's mod-tree position, no restructuring proposed)",
+        "safety": "Safe",
+        "api_surface_changed": false,
+        "identity_neutral": true,
+        "guarantee": "Declared"
+      }
+    ],
+    "idiom_choices": []
+  }
+}
