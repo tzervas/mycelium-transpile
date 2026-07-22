@@ -147,7 +147,8 @@ fn derive_attr_gap_count_decreases_over_the_union_backlog_corpus_dn138() {
     /// this test exists to catch.
     const PRE_DN138_DERIVE_ATTR_COUNT: usize = 67;
 
-    if skip_if_corpus_absent("derive_attr_gap_count_decreases_over_the_union_backlog_corpus_dn138") {
+    if skip_if_corpus_absent("derive_attr_gap_count_decreases_over_the_union_backlog_corpus_dn138")
+    {
         return;
     }
     let mut derive_attr_count = 0usize;
