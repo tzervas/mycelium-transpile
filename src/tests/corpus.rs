@@ -32,12 +32,39 @@ fn corpus_crates() -> Vec<&'static str> {
     ]
 }
 
+/// Whether the union-backlog corpus is available. The component repos are standalone
+/// (decomposition, DN-88), so these sibling crate *sources* only exist when checked out
+/// adjacent — the fleet / monorepo layout. In a single-repo checkout (e.g. the standalone
+/// `check` CI job) they are absent. Per the never-silent ethos (mirroring
+/// `unavailable_checker_records_tool_unavailable`), that is a first-class SKIP, not a
+/// hard failure: the corpus assertions are meaningless without the real Rust source, and
+/// a fabricated pass would be worse than an honest skip.
+fn corpus_available() -> bool {
+    corpus_crates().iter().all(|c| crate_src(c).is_dir())
+}
+
+/// Emit a skip notice and return `true` when the corpus is absent (see `corpus_available`).
+fn skip_if_corpus_absent(test: &str) -> bool {
+    if corpus_available() {
+        return false;
+    }
+    eprintln!(
+        "SKIP {test}: union-backlog corpus not checked out adjacent (sibling crate sources \
+         absent — standalone single-repo checkout). Run in the fleet/monorepo layout to \
+         exercise it."
+    );
+    true
+}
+
 /// For every crate in the corpus, every file batch-transpiles without a hard parse failure, and
 /// the never-silent invariant (`emitted_items.len() + gaps.len() >= total_top_level_items`) holds
 /// for every file — the same sum-bound `src/tests/invariant.rs` checks over its fixed corpus,
 /// checked here over real, unmodified crate source.
 #[test]
 fn never_silent_holds_over_the_union_backlog_corpus() {
+    if skip_if_corpus_absent("never_silent_holds_over_the_union_backlog_corpus") {
+        return;
+    }
     for crate_name in corpus_crates() {
         let src = crate_src(crate_name);
         assert!(
@@ -78,6 +105,9 @@ fn never_silent_holds_over_the_union_backlog_corpus() {
 /// emission across the whole corpus, e.g. a botched refactor of `dispatch_item`).
 #[test]
 fn at_least_one_corpus_crate_has_nontrivial_expressible_fraction() {
+    if skip_if_corpus_absent("at_least_one_corpus_crate_has_nontrivial_expressible_fraction") {
+        return;
+    }
     let mut any_nontrivial = false;
     for crate_name in corpus_crates() {
         let src = crate_src(crate_name);
@@ -117,6 +147,10 @@ fn derive_attr_gap_count_decreases_over_the_union_backlog_corpus_dn138() {
     /// this test exists to catch.
     const PRE_DN138_DERIVE_ATTR_COUNT: usize = 67;
 
+    if skip_if_corpus_absent("derive_attr_gap_count_decreases_over_the_union_backlog_corpus_dn138")
+    {
+        return;
+    }
     let mut derive_attr_count = 0usize;
     for crate_name in corpus_crates() {
         let src = crate_src(crate_name);
