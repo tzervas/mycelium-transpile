@@ -19,7 +19,7 @@ permissions:
 jobs:
   detect:
     name: detect stack
-    runs-on: [self-hosted, linux, x64, podman, micro]
+    runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.d.outputs.rust }}
       python: ${{ steps.d.outputs.python }}
@@ -52,7 +52,7 @@ jobs:
     name: cargo check/test
     needs: detect
     if: needs.detect.outputs.rust == 'true'
-    runs-on: [self-hosted, linux, x64, podman, large]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: cargo check
@@ -64,7 +64,7 @@ jobs:
     name: python lint/test
     needs: detect
     if: needs.detect.outputs.python == 'true'
-    runs-on: [self-hosted, linux, x64, podman, medium]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -99,7 +99,7 @@ jobs:
     name: no stack detected
     needs: detect
     if: needs.detect.outputs.rust != 'true' && needs.detect.outputs.python != 'true'
-    runs-on: [self-hosted, linux, x64, podman, micro]
+    runs-on: ubuntu-latest
     steps:
       - run: |
           echo "No Cargo.toml / pyproject detected. fleet-ci reports success with no gates."
