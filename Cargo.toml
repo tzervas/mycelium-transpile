@@ -37,7 +37,7 @@ proptest = "1"
 # of `mycelium-l1`'s lexer keyword table; `src/tests/reserved.rs` asserts every snapshot word is
 # still rejected by the real `mycelium_l1::token::keyword`, so a snapshot that drifts to a
 # non-reserved word (the regressing over-gap direction) is caught. Dev-only — not a runtime dep.
-mycelium-l1 = { git = "https://github.com/tzervas/mycelium-l1", rev = "1d422648d6f41e1077c8f8b7ae7c7e38b2bd254f" }
+mycelium-l1 = { git = "https://github.com/tzervas/mycelium-l1", rev = "4e4a29679d8e941eab86fad40f49c9947e68eefd" }
 
 # --- standalone workspace root (course-correction Phase B, 2026-07-18; steer handoff §6.2) ---
 [workspace]
